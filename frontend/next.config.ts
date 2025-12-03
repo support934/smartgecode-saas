@@ -5,8 +5,8 @@ const nextConfig = {
       {
         source: '/api/:path*',
         destination: process.env.NODE_ENV === 'production' 
-          ? 'http://api-java.railway.internal:8080/:path*' // Prod internal (secure/low latency)
-          : 'http://localhost:8080/:path*', // Local backend
+          ? 'http://api-java.railway.internal:8080/api/:path*' // Prod internal + /api prefix
+          : 'http://localhost:8080/api/:path*', // Local backend + /api prefix
       },
     ];
   },

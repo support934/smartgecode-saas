@@ -1,5 +1,5 @@
 package com.smartgeocode.controller;  // Fixed: smartgeocode (g-e-o-c-o-d-e)
-
+// Force deploy sync Dec 2025
 import org.springframework.web.bind.annotation.*;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;

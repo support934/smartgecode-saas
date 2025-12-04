@@ -1,11 +1,11 @@
-package com.smartgecode;
+package com.smartgeocode;
 
-import io.smartgecode.SmartgecodeApplication;
+import io.smartgeocode.SmartgeocodeApplication;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.test.context.SpringBootTest;
 
-@SpringBootTest(classes = SmartgecodeApplication.class)
-class SmartgecodeApplicationTests {
+@SpringBootTest(classes = SmartgeocodeApplication.class)
+class SmartgeocodeApplicationTests {
 
     @Test
     void contextLoads() {

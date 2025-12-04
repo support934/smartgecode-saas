@@ -1,4 +1,4 @@
-package com.smartgecode.controller;
+package com.smartgeocode.controller;  // Fixed: smartgeocode (g-e-o-c-o-d-e)
 
 import org.springframework.web.bind.annotation.*;
 import java.net.http.HttpClient;
@@ -18,19 +18,19 @@ public class GeocodeController {
     private final ObjectMapper mapper = new ObjectMapper();
 
     @GetMapping("/geocode")
-    public Map<String, Object> geocode(@RequestParam("address") String addr) {  // Fixed: Matches curl's "address" param
+    public Map<String, Object> geocode(@RequestParam("address") String addr) {
         try {
             System.out.println("=== GEOCODE HIT: address param = " + addr + " at " + new java.util.Date());
 
             // Nominatim policy: must include real User-Agent, email for bots
             String encodedAddr = addr.replace(" ", "+").replace(",", "%2C");
-            String yourEmail = "your-real-email@gmail.com";  // <-- REPLACE WITH YOUR REAL EMAIL!
+            String yourEmail = "sumeet.vasu@gmail.com";  // <-- REPLACE WITH YOUR REAL EMAIL!
             String url = "https://nominatim.openstreetmap.org/search?format=json&email=" + yourEmail + "&q=" + encodedAddr + "&limit=1";
 
             var request = HttpRequest.newBuilder()
                     .uri(URI.create(url))
                     .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-                    .header("Referer", "https://smartgecode.io")
+                    .header("Referer", "https://smartgeocode.io")
                     .build();
 
             HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());

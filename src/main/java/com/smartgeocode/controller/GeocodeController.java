@@ -1,6 +1,5 @@
 package com.smartgeocode.controller;  // Fixed: smartgeocode (g-e-o-c-o-d-e)
-// Force deploy sync Dec 2025
-// Railway re-deploy: Explicit 'address' param Dec 2025
+
 import org.springframework.web.bind.annotation.*;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -25,7 +24,7 @@ public class GeocodeController {
 
             // Nominatim policy: must include real User-Agent, email for bots
             String encodedAddr = addr.replace(" ", "+").replace(",", "%2C");
-            String yourEmail = "sumeet.vasu@gmail.com";  // <-- REPLACE WITH YOUR REAL EMAIL!
+            String yourEmail = "sumeet.vasu@gmail.com";  // Real email
             String url = "https://nominatim.openstreetmap.org/search?format=json&email=" + yourEmail + "&q=" + encodedAddr + "&limit=1";
 
             var request = HttpRequest.newBuilder()

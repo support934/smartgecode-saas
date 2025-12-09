@@ -1,4 +1,4 @@
-package com.smartgeocode.controller;  // Fixed: smartgeocode (g-e-o-c-o-d-e)
+package com.smartgeocode.controller;  // smartgeocode with 'o' (g-e-o-c-o-d-e)
 
 import org.springframework.web.bind.annotation.*;
 import java.net.http.HttpClient;
@@ -10,20 +10,35 @@ import java.util.Map;
 import java.util.List;
 import java.util.HashMap;
 
+import com.sendgrid.SendGrid;
+import com.sendgrid.Method;
+import com.sendgrid.helpers.mail.Mail;
+import com.sendgrid.helpers.mail.objects.Email;
+import com.sendgrid.helpers.mail.objects.Content;
+import com.sendgrid.Request;
+import com.sendgrid.Response;
+
+import org.springframework.http.ResponseEntity;
+
 @RestController
 @RequestMapping("/api")
-@CrossOrigin(origins = {"http://localhost:3000", "*"})
+@CrossOrigin(origins = {"http://localhost:3000", "https://geocode-frontend.smartgeocode.io", "*"})
 public class GeocodeController {
     private final HttpClient client = HttpClient.newHttpClient();
     private final ObjectMapper mapper = new ObjectMapper();
+    private final String SENDGRID_API_KEY = "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";  // From sendgrid.com dashboard
 
     @GetMapping("/geocode")
-    public Map<String, Object> geocode(@RequestParam("address") String addr) {
+    public Map<String, Object> geocode(@RequestParam("address") String addr, @RequestParam(value = "addr", required = false) String addrFallback) {
+        String finalAddr = addr != null ? addr : addrFallback;
+        if (finalAddr == null || finalAddr.isEmpty()) {
+            return Map.of("status", "error", "message", "Missing address param (use ?address= or ?addr=)");
+        }
         try {
-            System.out.println("=== GEOCODE HIT: address param = " + addr + " at " + new java.util.Date());
+            System.out.println("=== GEOCODE HIT: param = " + finalAddr + " at " + new java.util.Date());
 
             // Nominatim policy: must include real User-Agent, email for bots
-            String encodedAddr = addr.replace(" ", "+").replace(",", "%2C");
+            String encodedAddr = finalAddr.replace(" ", "+").replace(",", "%2C");
             String yourEmail = "sumeet.vasu@gmail.com";  // Real email
             String url = "https://nominatim.openstreetmap.org/search?format=json&email=" + yourEmail + "&q=" + encodedAddr + "&limit=1";
 
@@ -45,7 +60,7 @@ public class GeocodeController {
             // Parse JSON - could be array [] or error object {"error": "..."}
             Object parsed = mapper.readValue(response.body(), Object.class);
             if (parsed instanceof List && ((List<?>) parsed).isEmpty()) {
-                return Map.of("status", "error", "message", "No results found for address: " + addr);
+                return Map.of("status", "error", "message", "No results found for address: " + finalAddr);
             }
 
             if (parsed instanceof Map && ((Map<?, ?>) parsed).containsKey("error")) {
@@ -56,7 +71,7 @@ public class GeocodeController {
             @SuppressWarnings("unchecked")
             List<Map<String, Object>> results = (List<Map<String, Object>>) parsed;
             if (results.isEmpty()) {
-                return Map.of("status", "error", "message", "No results found for address: " + addr);
+                return Map.of("status", "error", "message", "No results found for address: " + finalAddr);
             }
 
             // Extract first result
@@ -79,6 +94,36 @@ public class GeocodeController {
             System.out.println("=== GEOCODE EXCEPTION: " + e.getMessage());
             e.printStackTrace();
             return Map.of("status", "error", "message", "Internal error: " + e.getMessage());
+        }
+    }
+
+    @PostMapping("/email")
+    public ResponseEntity<String> sendEmail(@RequestBody Map<String, Object> payload) {
+        String email = (String) payload.get("email");
+        String address = (String) payload.get("address");
+        Map<String, Object> result = (Map<String, Object>) payload.get("result");
+        SendGrid sg = new SendGrid(SENDGRID_API_KEY);
+        Email from = new Email("noreply@smartgeocode.io");
+        Email to = new Email(email);
+        Content content = new Content("text/plain", "Address: " + address + "\nLat: " + result.get("lat") + "\nLng: " + result.get("lng") + "\nUpgrade: https://geocode-frontend.smartgeocode.io/upgrade");
+        Mail mail = new Mail(from, "Your Geocode Results", to, content);
+        try {
+            Request request = new Request();
+            request.setMethod(Method.POST);
+            request.setEndpoint("mail/send");
+            request.setBody(mail.build());
+            Response response = sg.api(request);
+            System.out.println("SendGrid status: " + response.getStatusCode());
+            if (response.getStatusCode() == 202) {
+                return ResponseEntity.ok("Email sent");
+            } else {
+                System.err.println("SendGrid error: " + response.getBody());
+                return ResponseEntity.status(500).body("SendGrid failed: " + response.getBody());
+            }
+        } catch (Exception e) {
+            System.err.println("Email send error: " + e.getMessage());
+            e.printStackTrace();
+            return ResponseEntity.status(500).body("Email failed: " + e.getMessage());
         }
     }
 }

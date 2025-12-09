@@ -26,7 +26,7 @@ import org.springframework.http.ResponseEntity;
 public class GeocodeController {
     private final HttpClient client = HttpClient.newHttpClient();
     private final ObjectMapper mapper = new ObjectMapper();
-    private final String SENDGRID_API_KEY = "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";  // From sendgrid.com dashboard
+    private final String SENDGRID_API_KEY = System.getenv("SENDGRID_API_KEY");  // From sendgrid.com dashboard
 
     @GetMapping("/geocode")
     public Map<String, Object> geocode(@RequestParam("address") String addr, @RequestParam(value = "addr", required = false) String addrFallback) {

@@ -1,4 +1,4 @@
-package com.smartgeocode.controller;  // smartgeocode with 'o' (g-e-o-c-o-d-e)
+package com.smartgeocode.controller;  // smartgeocode with 'o' - (g-e-o-c-o-d-e)
 
 import org.springframework.web.bind.annotation.*;
 import java.net.http.HttpClient;

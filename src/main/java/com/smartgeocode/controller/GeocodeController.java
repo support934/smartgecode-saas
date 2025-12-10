@@ -35,6 +35,8 @@ public class GeocodeController {
     @GetMapping("/geocode")
     public Map<String, Object> geocode(@RequestParam("address") String addr, @RequestParam(value = "addr", required = false) String addrFallback) {
         String finalAddr = addr != null ? addr : addrFallback;
+        String noCache = System.getenv("NOMINATIM_URL_NO_CACHE") != null && Boolean.parseBoolean(System.getenv("NOMINATIM_URL_NO_CACHE")) ? "&no_cache=1" : "";
+        String url = "https://nominatim.openstreetmap.org/search?format=json&email=" + yourEmail + "&q=" + encodedAddr + "&limit=1" + noCache;
         if (finalAddr == null || finalAddr.isEmpty()) {
             return Map.of("status", "error", "message", "Missing address param (use ?address= or ?addr=)");
         }

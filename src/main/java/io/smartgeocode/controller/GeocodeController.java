@@ -9,6 +9,22 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import java.util.Map;
 import java.util.List;
 import java.util.HashMap;
+import org.springframework.web.multipart.MultipartFile;
+import org.springframework.beans.factory.annotation.Autowired;
+import javax.sql.DataSource;
+import java.sql.Connection;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
+import java.sql.Statement;
+import java.util.Date;
+import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
+import io.jsonwebtoken.Jwts;
+import io.jsonwebtoken.SignatureAlgorithm;
+import io.jsonwebtoken.Claims;
+import com.opencsv.CSVReader;
+import java.io.InputStreamReader;
+import java.util.Random;
+import javax.crypto.spec.SecretKeySpec;
 
 import com.sendgrid.SendGrid;
 import com.sendgrid.Method;
@@ -28,8 +44,16 @@ public class GeocodeController {
     private final ObjectMapper mapper = new ObjectMapper();
     private final String SENDGRID_API_KEY = System.getenv("SENDGRID_API_KEY");  // From env var
 
+    @Autowired
+    private DataSource dataSource;  // DB connection
+
+    private final BCryptPasswordEncoder encoder = new BCryptPasswordEncoder();
+    private final String JWT_SECRET = System.getenv("JWT_SECRET") != null ? System.getenv("JWT_SECRET") : "uokKY7YPnSc0t1YHkKfAIc95OzJOvZj1YourRandomStringHereHkKfAIc95OzJOvZj1";  // Set in Railway env
+
+    private final Random random = new Random();  // For rate limiting
+
     public GeocodeController() {
-        System.out.println("=== GeocodeController instantiated -/api/geocode and /api/email ready ===");
+        System.out.println("=== GeocodeController instantiated - /api/email and /api/geocode ready ===");
     }
 
     @GetMapping("/geocode")
@@ -39,7 +63,7 @@ public class GeocodeController {
             return Map.of("status", "error", "message", "Missing address param (use ?address= or ?addr=)");
         }
         try {
-            System.out.println("=== GEOCODE HIT: param = " + finalAddr + " at " + new java.util.Date());
+            System.out.println("=== GEOCODE HIT: param = " + finalAddr + " at " + new Date());
 
             // Nominatim policy: must include real User-Agent, email for bots
             String encodedAddr = finalAddr.replace(" ", "+").replace(",", "%2C");
@@ -130,28 +154,258 @@ public class GeocodeController {
             return ResponseEntity.status(500).body("Email failed: " + e.getMessage());
         }
     }
+
     @GetMapping("/")
-public String landing() {
-    return """
-        <!DOCTYPE html>
-        <html lang="en">
-        <head>
-          <meta charset="UTF-8">
-          <meta name="viewport" content="width=device-width, initial-scale=1.0">
-          <title>Smartgecode - $5k Weekend Backend Project</title>
-          <style>
-            body { font-family: Arial, sans-serif; text-align: center; padding: 50px; background: #f0f8ff; }
-            h1 { color: #333; }
-            a { background: #007bff; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; }
-            a:hover { background: #0056b3; }
-          </style>
-        </head>
-        <body>
-          <h1>Smartgecode: Geocode App for $5k Weekend Revenue</h1>
-          <p>Free single lookup with email capture. Upsell batch ($29/mo Stripe).</p>
-          <a href="https://geocode-frontend.smartgecode.io">Try Free Lookup</a>
-        </body>
-        </html>
-        """;
+    public String landing() {
+        return """
+            <!DOCTYPE html>
+            <html lang="en">
+            <head>
+              <meta charset="UTF-8">
+              <meta name="viewport" content="width=device-width, initial-scale=1.0">
+              <title>smartgeocode - $5k Weekend Backend Project</title>
+              <style>
+                body { font-family: Arial, sans-serif; text-align: center; padding: 50px; background: #f0f8ff; }
+                h1 { color: #333; }
+                a { background: #007bff; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; }
+                a:hover { background: #0056b3; }
+              </style>
+            </head>
+            <body>
+              <h1>smartgeocode: Geocode App for $5k Weekend Revenue</h1>
+              <p>Free single lookup with email capture. Upsell batch ($29/mo Stripe).</p>
+              <a href="https://geocode-frontend.smartgeocode.io">Try Free Lookup</a>
+            </body>
+            </html>
+            """;
+    }
+
+    @PostMapping("/init-db")
+    public ResponseEntity<String> initDb() {
+        try (Connection conn = dataSource.getConnection()) {
+            String sql = "CREATE TABLE IF NOT EXISTS users (id SERIAL PRIMARY KEY, email VARCHAR(255) UNIQUE, password_hash VARCHAR(255), subscription_status VARCHAR(20) DEFAULT 'free', reset_token VARCHAR(500))";
+            PreparedStatement stmt = conn.prepareStatement(sql);
+            stmt.execute();
+            return ResponseEntity.ok("DB initialized");
+        } catch (Exception e) {
+            return ResponseEntity.status(500).body("DB init failed: " + e.getMessage());
+        }
+    }
+
+    @PostMapping("/signup")
+    public ResponseEntity<Map<String, Object>> signup(@RequestBody Map<String, String> credentials) {
+        String email = credentials.get("email");
+        String password = credentials.get("password");
+        Map<String, Object> response = new HashMap<>();
+
+        if (email == null || password == null) {
+            response.put("status", "error");
+            response.put("message", "Missing email or password");
+            return ResponseEntity.badRequest().body(response);
+        }
+
+        try (Connection conn = dataSource.getConnection()) {
+            // Check if user exists
+            PreparedStatement checkStmt = conn.prepareStatement("SELECT id FROM users WHERE email = ?");
+            checkStmt.setString(1, email);
+            ResultSet rs = checkStmt.executeQuery();
+            if (rs.next()) {
+                response.put("status", "error");
+                response.put("message", "Account with this email already exists. Please log in instead.");
+                return ResponseEntity.status(400).body(response);
+            }
+
+            // Hash password
+            String hashedPassword = encoder.encode(password);
+
+            // Insert user
+            PreparedStatement insertStmt = conn.prepareStatement("INSERT INTO users (email, password_hash) VALUES (?, ?)", Statement.RETURN_GENERATED_KEYS);
+            insertStmt.setString(1, email);
+            insertStmt.setString(2, hashedPassword);
+            insertStmt.executeUpdate();
+            ResultSet generatedKeys = insertStmt.getGeneratedKeys();
+            if (generatedKeys.next()) {
+                int userId = generatedKeys.getInt(1);
+                // Generate JWT
+                String token = Jwts.builder()
+                    .setSubject(email)
+                    .setIssuedAt(new Date())
+                    .setExpiration(new Date(System.currentTimeMillis() + 604800000))  // 7 days
+                    .signWith(SignatureAlgorithm.HS256, JWT_SECRET)
+                    .compact();
+
+                response.put("status", "success");
+                response.put("token", token);
+                response.put("userId", userId);
+                return ResponseEntity.ok(response);
+            } else {
+                response.put("status", "error");
+                response.put("message", "Signup failed");
+                return ResponseEntity.status(500).body(response);
+            }
+        } catch (Exception e) {
+            response.put("status", "error");
+            response.put("message", "Signup failed: " + e.getMessage());
+            return ResponseEntity.status(500).body(response);
+        }
+    }
+
+    @PostMapping("/login")
+    public ResponseEntity<Map<String, Object>> login(@RequestBody Map<String, String> credentials) {
+        String email = credentials.get("email");
+        String password = credentials.get("password");
+        Map<String, Object> response = new HashMap<>();
+
+        if (email == null || password == null) {
+            response.put("status", "error");
+            response.put("message", "Missing email or password");
+            return ResponseEntity.badRequest().body(response);
+        }
+
+        try (Connection conn = dataSource.getConnection()) {
+            PreparedStatement stmt = conn.prepareStatement("SELECT id, password_hash FROM users WHERE email = ?");
+            stmt.setString(1, email);
+            ResultSet rs = stmt.executeQuery();
+            if (rs.next() && encoder.matches(password, rs.getString("password_hash"))) {
+                // Generate JWT
+                String token = Jwts.builder()
+                    .setSubject(email)
+                    .setIssuedAt(new Date())
+                    .setExpiration(new Date(System.currentTimeMillis() + 604800000))  // 7 days
+                    .signWith(SignatureAlgorithm.HS256, JWT_SECRET)
+                    .compact();
+
+                response.put("status", "success");
+                response.put("token", token);
+                response.put("userId", rs.getInt("id"));
+                return ResponseEntity.ok(response);
+            } else {
+                response.put("status", "error");
+                response.put("message", "Invalid email or password");
+                return ResponseEntity.status(401).body(response);
+            }
+        } catch (Exception e) {
+            response.put("status", "error");
+            response.put("message", "Login failed");
+            return ResponseEntity.status(500).body(response);
+        }
+    }
+
+    @PostMapping("/forgot-password")
+    public ResponseEntity<Map<String, Object>> forgotPassword(@RequestBody Map<String, String> request) {
+        String email = request.get("email");
+        Map<String, Object> response = new HashMap<>();
+
+        if (email == null) {
+            response.put("status", "error");
+            response.put("message", "Missing email");
+            return ResponseEntity.badRequest().body(response);
+        }
+
+        try (Connection conn = dataSource.getConnection()) {
+            // Check if user exists
+            PreparedStatement stmt = conn.prepareStatement("SELECT id FROM users WHERE email = ?");
+            stmt.setString(1, email);
+            ResultSet rs = stmt.executeQuery();
+            if (!rs.next()) {
+                response.put("status", "error");
+                response.put("message", "Email not found");
+                return ResponseEntity.status(404).body(response);
+            }
+
+            // Generate reset token (JWT with email, expires 1h)
+            String token = Jwts.builder()
+                .setSubject(email)
+                .setIssuedAt(new Date())
+                .setExpiration(new Date(System.currentTimeMillis() + 3600000))  // 1 hour
+                .signWith(SignatureAlgorithm.HS256, JWT_SECRET)
+                .compact();
+
+            // Update user with token
+            PreparedStatement updateStmt = conn.prepareStatement("UPDATE users SET reset_token = ? WHERE email = ?");
+            updateStmt.setString(1, token);
+            updateStmt.setString(2, email);
+            updateStmt.executeUpdate();
+
+            // Send email with reset link
+            sendResetEmail(email, token);
+
+            response.put("status", "success");
+            response.put("message", "Reset link sent to your email");
+            return ResponseEntity.ok(response);
+        } catch (Exception e) {
+            response.put("status", "error");
+            response.put("message", "Reset failed—try again");
+            return ResponseEntity.status(500).body(response);
+        }
+    }
+
+    private void sendResetEmail(String email, String token) {
+        SendGrid sg = new SendGrid(SENDGRID_API_KEY);
+        Email from = new Email("noreply@smartgeocode.io");
+        Email to = new Email(email);
+        Content content = new Content("text/html", "<h2>Reset Your smartgeocode Password</h2><p>Click <a href='https://geocode-frontend.smartgeocode.io/reset-password?token=" + token + "'>here</a> to reset. Expires in 1 hour.</p>");
+        Mail mail = new Mail(from, "Password Reset", to, content);
+        try {
+            Request request = new Request();
+            request.setMethod(Method.POST);
+            request.setEndpoint("mail/send");
+            request.setBody(mail.build());
+            sg.api(request);
+            System.out.println("Reset email sent to " + email);
+        } catch (Exception e) {
+            System.err.println("Reset email failed: " + e.getMessage());
+        }
+    }
+
+    @PostMapping("/reset-password")
+    public ResponseEntity<Map<String, Object>> resetPassword(@RequestBody Map<String, String> request) {
+        String token = request.get("token");
+        String newPassword = request.get("password");
+        Map<String, Object> response = new HashMap<>();
+
+        if (token == null || newPassword == null) {
+            response.put("status", "error");
+            response.put("message", "Missing token or password");
+            return ResponseEntity.badRequest().body(response);
+        }
+
+        try {
+            // Verify token
+            Claims claims = Jwts.parser()
+                .setSigningKey(JWT_SECRET.getBytes())
+                .build()
+                .parseClaimsJws(token)
+                .getBody();
+            String email = claims.getSubject();
+            long issuedAt = claims.getIssuedAt().getTime();
+            long now = System.currentTimeMillis();
+            if (now - issuedAt > 3600000) {  // 1 hour
+                response.put("status", "error");
+                response.put("message", "Token expired");
+                return ResponseEntity.status(400).body(response);
+            }
+
+            // Update password
+            try (Connection conn = dataSource.getConnection()) {
+                PreparedStatement stmt = conn.prepareStatement("UPDATE users SET password_hash = ?, reset_token = NULL WHERE email = ?");
+                stmt.setString(1, encoder.encode(newPassword));
+                stmt.setString(2, email);
+                int updated = stmt.executeUpdate();
+                if (updated > 0) {
+                    response.put("status", "success");
+                    response.put("message", "Password reset successfully. Log in now.");
+                    return ResponseEntity.ok(response);
+                } else {
+                    response.put("status", "error");
+                    response.put("message", "Invalid token");
+                    return ResponseEntity.status(400).body(response);
+                }
+            }
+        } catch (Exception e) {
+            response.put("status", "error");
+            response.put("message", "Reset failed—try again");
+            return ResponseEntity.status(500).body(response);
+        }
     }
 }

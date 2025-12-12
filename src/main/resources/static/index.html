@@ -3,15 +3,19 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>smartgeocode – Fast Geocoding for Businesses</title>
+  <title>Smartgeocode – Fast Geocoding for Businesses</title>
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; line-height: 1.6; color: #333; background: white; }
-    .hero { background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%); color: white; padding: 100px 20px; text-align: center; }
-    .hero h1 { font-size: 3em; margin-bottom: 10px; }
-    .hero p { font-size: 1.3em; margin-bottom: 30px; opacity: 0.95; }
-    .cta { background: white; color: #ef4444; padding: 15px 40px; text-decoration: none; border-radius: 50px; font-size: 1.2em; font-weight: bold; display: inline-block; transition: transform 0.3s; }
+    .header { background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%); color: white; padding: 1rem 2rem; display: flex; justify-content: space-between; align-items: center; }
+    .header h1 { font-size: 1.5rem; font-weight: bold; }
+    .header a { background: white; color: #ef4444; padding: 0.5rem 1rem; text-decoration: none; border-radius: 0.5rem; font-weight: bold; transition: background 0.3s; }
+    .header a:hover { background: #f3f4f6; }
+    .hero { background: linear-gradient(135deg, #fef2f2 0%, #fee2e2 100%); color: #333; padding: 100px 20px; text-align: center; }
+    .hero h1 { font-size: 3em; margin-bottom: 10px; color: #ef4444; }
+    .hero p { font-size: 1.3em; margin-bottom: 30px; }
+    .cta { background: #ef4444; color: white; padding: 15px 40px; text-decoration: none; border-radius: 50px; font-size: 1.2em; font-weight: bold; display: inline-block; transition: transform 0.3s; }
     .cta:hover { transform: translateY(-3px); }
     .features { padding: 80px 20px; background: #f8f9fa; }
     .features h2 { text-align: center; font-size: 2.5em; margin-bottom: 50px; color: #ef4444; }
@@ -21,21 +25,21 @@
     .card i { font-size: 3em; color: #ef4444; margin-bottom: 20px; }
     .card h3 { font-size: 1.5em; margin-bottom: 10px; color: #333; }
     .card p { color: #666; }
-    .upsell { padding: 80px 20px; text-align: center; background: white; }
-    .upsell h2 { font-size: 2.5em; margin-bottom: 20px; color: #ef4444; }
-    .upsell p { font-size: 1.2em; margin-bottom: 30px; color: #666; }
-    .price { font-size: 3em; font-weight: bold; color: #ef4444; margin-bottom: 20px; }
     @media (max-width: 768px) { .hero h1 { font-size: 2em; } .grid { grid-template-columns: 1fr; } }
   </style>
 </head>
 <body>
+  <header class="header">
+    <h1>Smartgeocode</h1>
+    <a href="https://geocode-frontend.smartgeocode.io/success">Log In</a>
+  </header>
   <section class="hero">
     <h1>Stop Wasting Time on Address Validation</h1>
     <p>Get precise lat/lng coordinates in seconds. Save your team hours—free trial for singles, premium for unlimited batches at $29/mo.</p>
     <a href="https://geocode-frontend.smartgeocode.io" class="cta">Start Free Trial</a>
   </section>
   <section class="features">
-    <h2>Why smartgeocode?</h2>
+    <h2>Why Smartgeocode?</h2>
     <div class="grid">
       <div class="card">
         <i class="fas fa-bolt"></i>
@@ -43,22 +47,16 @@
         <p>Accurate lat/lng in seconds—no API limits for free trials. Save your team hours on manual work.</p>
       </div>
       <div class="card">
-        <i className="fas fa-envelope-open"></i>
+        <i class="fas fa-envelope-open"></i>
         <h3>Lead Generation Built-In</h3>
         <p>Capture emails with every lookup—grow your list effortlessly and convert visitors to customers.</p>
       </div>
       <div class="card">
-        <i className="fas fa-rocket"></i>
+        <i class="fas fa-rocket"></i>
         <h3>Scale with Premium</h3>
         <p>Unlimited CSV batch processing for $29/mo—power your business with fast, reliable geocoding.</p>
       </div>
     </div>
-  </section>
-  <section class="upsell">
-    <h2>Ready to Scale?</h2>
-    <p>From free trials to paid batch—built for revenue in a weekend.</p>
-    <div className="price">$29/mo</div>
-    <a href="https://geocode-frontend.smartgeocode.io" className="cta">Upgrade Now</a>
   </section>
 </body>
 </html>

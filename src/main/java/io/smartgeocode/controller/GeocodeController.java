@@ -21,10 +21,14 @@ import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import io.jsonwebtoken.Jwts;
 import io.jsonwebtoken.SignatureAlgorithm;
 import io.jsonwebtoken.Claims;
+import io.jsonwebtoken.security.Keys;
+import java.util.Base64;
+import javax.crypto.SecretKey;
 import com.opencsv.CSVReader;
 import java.io.InputStreamReader;
 import java.util.Random;
-import javax.crypto.spec.SecretKeySpec;
+import java.util.UUID;
+import java.nio.charset.StandardCharsets;
 
 import com.sendgrid.SendGrid;
 import com.sendgrid.Method;
@@ -48,7 +52,20 @@ public class GeocodeController {
     private DataSource dataSource;  // DB connection
 
     private final BCryptPasswordEncoder encoder = new BCryptPasswordEncoder();
-    private final String JWT_SECRET = System.getenv("JWT_SECRET") != null ? System.getenv("JWT_SECRET") : "uokKY7YPnSc0t1YHkKfAIc95OzJOvZj1YourRandomStringHereHkKfAIc95OzJOvZj1";  // Set in Railway env
+
+    // Secure JWT_SECRET: Use env var if set and long enough, else generate 256-bit key
+    private final String JWT_SECRET;
+
+    {
+        String envSecret = System.getenv("JWT_SECRET");
+        if (envSecret != null && envSecret.length() >= 32) {
+            JWT_SECRET = envSecret;
+        } else {
+            SecretKey key = Keys.secretKeyFor(SignatureAlgorithm.HS256);  // Generates secure 256-bit key
+            JWT_SECRET = Base64.getEncoder().encodeToString(key.getEncoded());
+            System.out.println("Generated secure JWT_SECRET for local testing (set in env for production): " + JWT_SECRET);
+        }
+    }
 
     private final Random random = new Random();  // For rate limiting
 
@@ -65,7 +82,6 @@ public class GeocodeController {
         try {
             System.out.println("=== GEOCODE HIT: param = " + finalAddr + " at " + new Date());
 
-            // Nominatim policy: must include real User-Agent, email for bots
             String encodedAddr = finalAddr.replace(" ", "+").replace(",", "%2C");
             String yourEmail = "sumeet.vasu@gmail.com";  // Real email
             String url = "https://nominatim.openstreetmap.org/search?format=json&email=" + yourEmail + "&q=" + encodedAddr + "&limit=1";
@@ -78,14 +94,10 @@ public class GeocodeController {
 
             HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
 
-            System.out.println("=== NOMINATIM STATUS: " + response.statusCode());
-            System.out.println("=== NOMINATIM RAW BODY: " + response.body());
-
             if (response.statusCode() != 200) {
                 return Map.of("status", "error", "message", "Nominatim API error: " + response.statusCode() + " - " + response.body());
             }
 
-            // Parse JSON - could be array [] or error object {"error": "..."}
             Object parsed = mapper.readValue(response.body(), Object.class);
             if (parsed instanceof List && ((List<?>) parsed).isEmpty()) {
                 return Map.of("status", "error", "message", "No results found for address: " + finalAddr);
@@ -95,20 +107,17 @@ public class GeocodeController {
                 return Map.of("status", "error", "message", "Nominatim error: " + ((Map<?, ?>) parsed).get("error"));
             }
 
-            // Assume it's a list with results
             @SuppressWarnings("unchecked")
             List<Map<String, Object>> results = (List<Map<String, Object>>) parsed;
             if (results.isEmpty()) {
                 return Map.of("status", "error", "message", "No results found for address: " + finalAddr);
             }
 
-            // Extract first result
             Map<String, Object> result = results.get(0);
             String lat = (String) result.get("lat");
             String lon = (String) result.get("lon");
             String displayName = (String) result.get("display_name");
 
-            // Build response map
             Map<String, Object> responseMap = new HashMap<>();
             responseMap.put("status", "success");
             responseMap.put("lat", lat);
@@ -313,13 +322,8 @@ public class GeocodeController {
                 return ResponseEntity.status(404).body(response);
             }
 
-            // Generate reset token (JWT with email, expires 1h)
-            String token = Jwts.builder()
-                .setSubject(email)
-                .setIssuedAt(new Date())
-                .setExpiration(new Date(System.currentTimeMillis() + 3600000))  // 1 hour
-                .signWith(SignatureAlgorithm.HS256, JWT_SECRET)
-                .compact();
+            // Generate UUID token (no JWT)
+            String token = UUID.randomUUID().toString();
 
             // Update user with token
             PreparedStatement updateStmt = conn.prepareStatement("UPDATE users SET reset_token = ? WHERE email = ?");
@@ -370,37 +374,23 @@ public class GeocodeController {
             return ResponseEntity.badRequest().body(response);
         }
 
-        try {
-            // Verify token
-            Claims claims = Jwts.parser()
-                .setSigningKey(JWT_SECRET.getBytes())
-                .build()
-                .parseClaimsJws(token)
-                .getBody();
-            String email = claims.getSubject();
-            long issuedAt = claims.getIssuedAt().getTime();
-            long now = System.currentTimeMillis();
-            if (now - issuedAt > 3600000) {  // 1 hour
+        try (Connection conn = dataSource.getConnection()) {
+            PreparedStatement stmt = conn.prepareStatement("SELECT email FROM users WHERE reset_token = ?");
+            stmt.setString(1, token);
+            ResultSet rs = stmt.executeQuery();
+            if (rs.next()) {
+                String email = rs.getString("email");
+                PreparedStatement updateStmt = conn.prepareStatement("UPDATE users SET password_hash = ?, reset_token = NULL WHERE email = ?");
+                updateStmt.setString(1, encoder.encode(newPassword));
+                updateStmt.setString(2, email);
+                updateStmt.executeUpdate();
+                response.put("status", "success");
+                response.put("message", "Password reset successfully. Log in now.");
+                return ResponseEntity.ok(response);
+            } else {
                 response.put("status", "error");
-                response.put("message", "Token expired");
+                response.put("message", "Invalid or expired token");
                 return ResponseEntity.status(400).body(response);
-            }
-
-            // Update password
-            try (Connection conn = dataSource.getConnection()) {
-                PreparedStatement stmt = conn.prepareStatement("UPDATE users SET password_hash = ?, reset_token = NULL WHERE email = ?");
-                stmt.setString(1, encoder.encode(newPassword));
-                stmt.setString(2, email);
-                int updated = stmt.executeUpdate();
-                if (updated > 0) {
-                    response.put("status", "success");
-                    response.put("message", "Password reset successfully. Log in now.");
-                    return ResponseEntity.ok(response);
-                } else {
-                    response.put("status", "error");
-                    response.put("message", "Invalid token");
-                    return ResponseEntity.status(400).body(response);
-                }
             }
         } catch (Exception e) {
             response.put("status", "error");

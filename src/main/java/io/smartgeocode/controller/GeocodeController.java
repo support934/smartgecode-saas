@@ -29,6 +29,7 @@ import java.io.InputStreamReader;
 import java.util.Random;
 import java.util.UUID;
 import java.nio.charset.StandardCharsets;
+import jakarta.annotation.PostConstruct;  // For startup DB init
 
 import com.sendgrid.SendGrid;
 import com.sendgrid.Method;
@@ -71,6 +72,26 @@ public class GeocodeController {
 
     public GeocodeController() {
         System.out.println("=== GeocodeController instantiated - /api/email and /api/geocode ready ===");
+    }
+
+    // Auto-create lowercase "users" table on startup (Postgres case-sensitive)
+    @PostConstruct
+    public void initDatabase() {
+        try (Connection conn = dataSource.getConnection()) {
+            String sql = "CREATE TABLE IF NOT EXISTS users (" +
+                         "id SERIAL PRIMARY KEY, " +
+                         "email VARCHAR(255) UNIQUE NOT NULL, " +
+                         "password_hash VARCHAR(255) NOT NULL, " +
+                         "subscription_status VARCHAR(20) DEFAULT 'free', " +
+                         "reset_token VARCHAR(500)" +
+                         ")";
+            PreparedStatement stmt = conn.prepareStatement(sql);
+            stmt.execute();
+            System.out.println("DB table 'users' ensured (created if missing on startup)");
+        } catch (Exception e) {
+            System.err.println("DB init failed on startup: " + e.getMessage());
+            e.printStackTrace();
+        }
     }
 
     @GetMapping("/geocode")
@@ -130,7 +151,7 @@ public class GeocodeController {
         } catch (Exception e) {
             System.out.println("=== GEOCODE EXCEPTION: " + e.getMessage());
             e.printStackTrace();
-            return Map.of("status", "error", "message", "Internal error: " + e.getMessage());
+            return Map.of("status", "error", "message", "Internal error");
         }
     }
 
@@ -155,12 +176,11 @@ public class GeocodeController {
                 return ResponseEntity.ok("Email sent");
             } else {
                 System.err.println("SendGrid error: " + response.getBody());
-                return ResponseEntity.status(500).body("SendGrid failed: " + response.getBody());
+                return ResponseEntity.status(500).body("SendGrid failed");
             }
         } catch (Exception e) {
             System.err.println("Email send error: " + e.getMessage());
-            e.printStackTrace();
-            return ResponseEntity.status(500).body("Email failed: " + e.getMessage());
+            return ResponseEntity.status(500).body("Email failed");
         }
     }
 
@@ -197,7 +217,7 @@ public class GeocodeController {
             stmt.execute();
             return ResponseEntity.ok("DB initialized");
         } catch (Exception e) {
-            return ResponseEntity.status(500).body("DB init failed: " + e.getMessage());
+            return ResponseEntity.status(500).body("DB init failed");
         }
     }
 
@@ -249,12 +269,12 @@ public class GeocodeController {
                 return ResponseEntity.ok(response);
             } else {
                 response.put("status", "error");
-                response.put("message", "Signup failed");
+                response.put("message", "Signup failed—try again");
                 return ResponseEntity.status(500).body(response);
             }
         } catch (Exception e) {
             response.put("status", "error");
-            response.put("message", "Signup failed: " + e.getMessage());
+            response.put("message", "Signup failed—try again");
             return ResponseEntity.status(500).body(response);
         }
     }
@@ -295,7 +315,7 @@ public class GeocodeController {
             }
         } catch (Exception e) {
             response.put("status", "error");
-            response.put("message", "Login failed");
+            response.put("message", "Login failed—try again");
             return ResponseEntity.status(500).body(response);
         }
     }

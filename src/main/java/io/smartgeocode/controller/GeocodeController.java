@@ -29,7 +29,7 @@ import java.io.InputStreamReader;
 import java.util.Random;
 import java.util.UUID;
 import java.nio.charset.StandardCharsets;
-import jakarta.annotation.PostConstruct;  // For startup DB init
+import jakarta.annotation.PostConstruct;
 
 import com.sendgrid.SendGrid;
 import com.sendgrid.Method;
@@ -342,7 +342,7 @@ public class GeocodeController {
                 return ResponseEntity.status(404).body(response);
             }
 
-            // Generate UUID token (no JWT)
+            // Generate UUID reset token
             String token = UUID.randomUUID().toString();
 
             // Update user with token

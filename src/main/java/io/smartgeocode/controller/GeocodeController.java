@@ -8,6 +8,7 @@ import java.net.URI;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.util.Map;
 import java.util.List;
+import java.util.ArrayList;
 import java.util.HashMap;
 import org.springframework.web.multipart.MultipartFile;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -40,6 +41,8 @@ import com.sendgrid.Request;
 import com.sendgrid.Response;
 
 import org.springframework.http.ResponseEntity;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.MediaType;
 
 @RestController
 @RequestMapping("/api")
@@ -74,20 +77,29 @@ public class GeocodeController {
         System.out.println("=== GeocodeController instantiated - /api/email and /api/geocode ready ===");
     }
 
-    // Auto-create lowercase "users" table on startup (Postgres case-sensitive)
+    // Auto-create tables on startup
     @PostConstruct
     public void initDatabase() {
         try (Connection conn = dataSource.getConnection()) {
-            String sql = "CREATE TABLE IF NOT EXISTS users (" +
-                         "id SERIAL PRIMARY KEY, " +
-                         "email VARCHAR(255) UNIQUE NOT NULL, " +
-                         "password_hash VARCHAR(255) NOT NULL, " +
-                         "subscription_status VARCHAR(20) DEFAULT 'free', " +
-                         "reset_token VARCHAR(500)" +
-                         ")";
-            PreparedStatement stmt = conn.prepareStatement(sql);
-            stmt.execute();
-            System.out.println("DB table 'users' ensured (created if missing on startup)");
+            String sqlUsers = "CREATE TABLE IF NOT EXISTS users (" +
+                              "id SERIAL PRIMARY KEY, " +
+                              "email VARCHAR(255) UNIQUE NOT NULL, " +
+                              "password_hash VARCHAR(255) NOT NULL, " +
+                              "subscription_status VARCHAR(20) DEFAULT 'free', " +
+                              "reset_token VARCHAR(500)" +
+                              ")";
+            String sqlBatches = "CREATE TABLE IF NOT EXISTS batches (" +
+                                "id SERIAL PRIMARY KEY, " +
+                                "user_id INTEGER REFERENCES users(id), " +
+                                "status VARCHAR(20) DEFAULT 'processing', " +
+                                "created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, " +
+                                "results TEXT" +  // Store CSV text
+                                ")";
+            PreparedStatement stmt1 = conn.prepareStatement(sqlUsers);
+            stmt1.execute();
+            PreparedStatement stmt2 = conn.prepareStatement(sqlBatches);
+            stmt2.execute();
+            System.out.println("DB tables 'users' and 'batches' ensured");
         } catch (Exception e) {
             System.err.println("DB init failed on startup: " + e.getMessage());
             e.printStackTrace();
@@ -342,7 +354,7 @@ public class GeocodeController {
                 return ResponseEntity.status(404).body(response);
             }
 
-            // Generate UUID reset token
+            // Generate UUID token
             String token = UUID.randomUUID().toString();
 
             // Update user with token
@@ -416,6 +428,159 @@ public class GeocodeController {
             response.put("status", "error");
             response.put("message", "Reset failed—try again");
             return ResponseEntity.status(500).body(response);
+        }
+    }
+
+    // Premium Batch Geocode
+    @PostMapping(value = "/batch-geocode", consumes = "multipart/form-data")
+    public ResponseEntity<Map<String, Object>> batchGeocode(@RequestParam("file") MultipartFile file, @RequestParam("email") String email) {
+        Map<String, Object> response = new HashMap<>();
+
+        if (file.isEmpty()) {
+            response.put("status", "error");
+            response.put("message", "No file uploaded");
+            return ResponseEntity.badRequest().body(response);
+        }
+
+        try (Connection conn = dataSource.getConnection()) {
+            // Get user_id from email
+            PreparedStatement userStmt = conn.prepareStatement("SELECT id FROM users WHERE email = ?");
+            userStmt.setString(1, email);
+            ResultSet rs = userStmt.executeQuery();
+            if (!rs.next()) {
+                response.put("status", "error");
+                response.put("message", "User not found");
+                return ResponseEntity.status(404).body(response);
+            }
+            int userId = rs.getInt("id");
+
+            // Create batch entry
+            PreparedStatement batchStmt = conn.prepareStatement("INSERT INTO batches (user_id, status) VALUES (?, 'processing')", Statement.RETURN_GENERATED_KEYS);
+            batchStmt.setInt(1, userId);
+            batchStmt.executeUpdate();
+            ResultSet generatedKeys = batchStmt.getGeneratedKeys();
+            int batchId = generatedKeys.next() ? generatedKeys.getInt(1) : -1;
+
+            // Process CSV
+            List<Map<String, String>> fullResults = new ArrayList<>();
+            try (CSVReader csvReader = new CSVReader(new InputStreamReader(file.getInputStream()))) {
+                String[] headers = csvReader.readNext();  // First row headers
+                if (headers == null || !List.of(headers).contains("address")) {
+                    response.put("status", "error");
+                    response.put("message", "CSV must have 'address' column");
+                    return ResponseEntity.badRequest().body(response);
+                }
+
+                String[] line;
+                int row = 1;
+                while ((line = csvReader.readNext()) != null) {
+                    row++;
+                    Map<String, String> rowMap = new HashMap<>();
+                    for (int i = 0; i < headers.length; i++) {
+                        rowMap.put(headers[i], line.length > i ? line[i].trim() : "");
+                    }
+                    String address = rowMap.get("address");
+                    if (address.isEmpty() || address.equalsIgnoreCase("N/A")) {
+                        rowMap.put("status", "skipped");
+                        rowMap.put("message", "Blank or N/A address");
+                    } else {
+                        // Geocode single
+                        Map<String, Object> geo = geocode(address, null);
+                        if (geo.get("status").equals("success")) {
+                            rowMap.put("lat", (String) geo.get("lat"));
+                            rowMap.put("lng", (String) geo.get("lng"));
+                            rowMap.put("formatted_address", (String) geo.get("formatted_address"));
+                            rowMap.put("status", "success");
+                        } else {
+                            rowMap.put("status", "error");
+                            rowMap.put("message", (String) geo.get("message"));
+                        }
+                    }
+                    fullResults.add(rowMap);
+                }
+            }
+
+            // Build CSV results
+            StringBuilder csvResults = new StringBuilder();
+            // Headers
+            csvResults.append("address,lat,lng,formatted_address,status,message\n");
+            for (Map<String, String> row : fullResults) {
+                csvResults.append(String.format("\"%s\",\"%s\",\"%s\",\"%s\",\"%s\",\"%s\"\n",
+                    row.getOrDefault("address", ""),
+                    row.getOrDefault("lat", ""),
+                    row.getOrDefault("lng", ""),
+                    row.getOrDefault("formatted_address", ""),
+                    row.getOrDefault("status", ""),
+                    row.getOrDefault("message", "")));
+            }
+
+            // Update batch
+            PreparedStatement updateBatch = conn.prepareStatement("UPDATE batches SET status = 'complete', results = ? WHERE id = ?");
+            updateBatch.setString(1, csvResults.toString());
+            updateBatch.setInt(2, batchId);
+            updateBatch.executeUpdate();
+
+            // Preview first 50
+            List<Map<String, String>> preview = fullResults.subList(0, Math.min(50, fullResults.size()));
+
+            response.put("status", "success");
+            response.put("batchId", batchId);
+            response.put("preview", preview);
+            response.put("totalRows", fullResults.size());
+            response.put("message", "Batch processed—view/download on dashboard");
+
+            return ResponseEntity.ok(response);
+        } catch (Exception e) {
+            response.put("status", "error");
+            response.put("message", "Batch processing failed—try again");
+            return ResponseEntity.status(500).body(response);
+        }
+    }
+
+    // Get user batches
+    @GetMapping("/batches")
+    public ResponseEntity<List<Map<String, Object>>> getBatches(@RequestParam("email") String email) {
+        List<Map<String, Object>> batches = new ArrayList<>();
+        try (Connection conn = dataSource.getConnection()) {
+            PreparedStatement stmt = conn.prepareStatement("SELECT id, status, created_at FROM batches WHERE user_id = (SELECT id FROM users WHERE email = ?) ORDER BY created_at DESC");
+            stmt.setString(1, email);
+            ResultSet rs = stmt.executeQuery();
+            while (rs.next()) {
+                Map<String, Object> batch = new HashMap<>();
+                batch.put("id", rs.getInt("id"));
+                batch.put("status", rs.getString("status"));
+                batch.put("created_at", rs.getTimestamp("created_at"));
+                batches.add(batch);
+            }
+        } catch (Exception e) {
+            return ResponseEntity.status(500).body(batches);
+        }
+        return ResponseEntity.ok(batches);
+    }
+
+    // Get batch results or CSV download
+    @GetMapping("/batch/{id}")
+    public ResponseEntity<Object> getBatch(@PathVariable int id, @RequestParam("email") String email, @RequestParam(value = "download", required = false) boolean download) {
+        try (Connection conn = dataSource.getConnection()) {
+            PreparedStatement stmt = conn.prepareStatement("SELECT results, status FROM batches WHERE id = ? AND user_id = (SELECT id FROM users WHERE email = ?)");
+            stmt.setInt(1, id);
+            stmt.setString(2, email);
+            ResultSet rs = stmt.executeQuery();
+            if (rs.next()) {
+                String resultsCsv = rs.getString("results");
+                if (download) {
+                    HttpHeaders headers = new HttpHeaders();
+                    headers.setContentType(MediaType.parseMediaType("text/csv"));
+                    headers.setContentDispositionFormData("attachment", "batch-" + id + ".csv");
+                    return ResponseEntity.ok().headers(headers).body(resultsCsv.getBytes());
+                } else {
+                    return ResponseEntity.ok(Map.of("results", resultsCsv.split("\n"), "status", rs.getString("status")));
+                }
+            } else {
+                return ResponseEntity.status(404).body(Map.of("message", "Batch not found"));
+            }
+        } catch (Exception e) {
+            return ResponseEntity.status(500).body(Map.of("message", "Batch load failed"));
         }
     }
 }

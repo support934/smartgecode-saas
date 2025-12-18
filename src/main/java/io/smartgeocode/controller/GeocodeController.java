@@ -93,13 +93,13 @@ public class GeocodeController {
                                 "user_id INTEGER REFERENCES users(id), " +
                                 "status VARCHAR(20) DEFAULT 'processing', " +
                                 "created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, " +
-                                "results TEXT" +  // Store CSV text
+                                "results TEXT" +
                                 ")";
             PreparedStatement stmt1 = conn.prepareStatement(sqlUsers);
             stmt1.execute();
             PreparedStatement stmt2 = conn.prepareStatement(sqlBatches);
             stmt2.execute();
-            System.out.println("DB tables 'users' and 'batches' ensured");
+            System.out.println("DB tables 'users' and 'batches' ensured on startup");
         } catch (Exception e) {
             System.err.println("DB init failed on startup: " + e.getMessage());
             e.printStackTrace();
@@ -126,6 +126,9 @@ public class GeocodeController {
                     .build();
 
             HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
+
+            System.out.println("=== NOMINATIM STATUS: " + response.statusCode());
+            System.out.println("=== NOMINATIM RAW BODY: " + response.body());
 
             if (response.statusCode() != 200) {
                 return Map.of("status", "error", "message", "Nominatim API error: " + response.statusCode() + " - " + response.body());
@@ -431,6 +434,27 @@ public class GeocodeController {
         }
     }
 
+    // Set premium on Stripe success
+    @PostMapping("/set-premium")
+    public ResponseEntity<String> setPremium(@RequestBody Map<String, String> request) {
+        String email = request.get("email");
+        if (email == null) {
+            return ResponseEntity.badRequest().body("Missing email");
+        }
+        try (Connection conn = dataSource.getConnection()) {
+            PreparedStatement stmt = conn.prepareStatement("UPDATE users SET subscription_status = 'premium' WHERE email = ?");
+            stmt.setString(1, email);
+            int updated = stmt.executeUpdate();
+            if (updated > 0) {
+                return ResponseEntity.ok("Premium activated");
+            } else {
+                return ResponseEntity.status(404).body("User not found");
+            }
+        } catch (Exception e) {
+            return ResponseEntity.status(500).body("Activation failed");
+        }
+    }
+
     // Premium Batch Geocode
     @PostMapping(value = "/batch-geocode", consumes = "multipart/form-data")
     public ResponseEntity<Map<String, Object>> batchGeocode(@RequestParam("file") MultipartFile file, @RequestParam("email") String email) {
@@ -443,8 +467,8 @@ public class GeocodeController {
         }
 
         try (Connection conn = dataSource.getConnection()) {
-            // Get user_id from email
-            PreparedStatement userStmt = conn.prepareStatement("SELECT id FROM users WHERE email = ?");
+            // Get user_id
+            PreparedStatement userStmt = conn.prepareStatement("SELECT id, subscription_status FROM users WHERE email = ?");
             userStmt.setString(1, email);
             ResultSet rs = userStmt.executeQuery();
             if (!rs.next()) {
@@ -453,8 +477,14 @@ public class GeocodeController {
                 return ResponseEntity.status(404).body(response);
             }
             int userId = rs.getInt("id");
+            String subscription = rs.getString("subscription_status");
+            if (!"premium".equals(subscription)) {
+                response.put("status", "error");
+                response.put("message", "Premium subscription required for batch upload");
+                return ResponseEntity.status(403).body(response);
+            }
 
-            // Create batch entry
+            // Create batch
             PreparedStatement batchStmt = conn.prepareStatement("INSERT INTO batches (user_id, status) VALUES (?, 'processing')", Statement.RETURN_GENERATED_KEYS);
             batchStmt.setInt(1, userId);
             batchStmt.executeUpdate();
@@ -464,7 +494,7 @@ public class GeocodeController {
             // Process CSV
             List<Map<String, String>> fullResults = new ArrayList<>();
             try (CSVReader csvReader = new CSVReader(new InputStreamReader(file.getInputStream()))) {
-                String[] headers = csvReader.readNext();  // First row headers
+                String[] headers = csvReader.readNext();
                 if (headers == null || !List.of(headers).contains("address")) {
                     response.put("status", "error");
                     response.put("message", "CSV must have 'address' column");
@@ -472,9 +502,7 @@ public class GeocodeController {
                 }
 
                 String[] line;
-                int row = 1;
                 while ((line = csvReader.readNext()) != null) {
-                    row++;
                     Map<String, String> rowMap = new HashMap<>();
                     for (int i = 0; i < headers.length; i++) {
                         rowMap.put(headers[i], line.length > i ? line[i].trim() : "");
@@ -484,7 +512,6 @@ public class GeocodeController {
                         rowMap.put("status", "skipped");
                         rowMap.put("message", "Blank or N/A address");
                     } else {
-                        // Geocode single
                         Map<String, Object> geo = geocode(address, null);
                         if (geo.get("status").equals("success")) {
                             rowMap.put("lat", (String) geo.get("lat"));
@@ -502,7 +529,6 @@ public class GeocodeController {
 
             // Build CSV results
             StringBuilder csvResults = new StringBuilder();
-            // Headers
             csvResults.append("address,lat,lng,formatted_address,status,message\n");
             for (Map<String, String> row : fullResults) {
                 csvResults.append(String.format("\"%s\",\"%s\",\"%s\",\"%s\",\"%s\",\"%s\"\n",
@@ -520,14 +546,14 @@ public class GeocodeController {
             updateBatch.setInt(2, batchId);
             updateBatch.executeUpdate();
 
-            // Preview first 50
+            // Preview
             List<Map<String, String>> preview = fullResults.subList(0, Math.min(50, fullResults.size()));
 
             response.put("status", "success");
             response.put("batchId", batchId);
             response.put("preview", preview);
             response.put("totalRows", fullResults.size());
-            response.put("message", "Batch processed—view/download on dashboard");
+            response.put("message", "Batch processed");
 
             return ResponseEntity.ok(response);
         } catch (Exception e) {
@@ -537,7 +563,6 @@ public class GeocodeController {
         }
     }
 
-    // Get user batches
     @GetMapping("/batches")
     public ResponseEntity<List<Map<String, Object>>> getBatches(@RequestParam("email") String email) {
         List<Map<String, Object>> batches = new ArrayList<>();
@@ -549,7 +574,7 @@ public class GeocodeController {
                 Map<String, Object> batch = new HashMap<>();
                 batch.put("id", rs.getInt("id"));
                 batch.put("status", rs.getString("status"));
-                batch.put("created_at", rs.getTimestamp("created_at"));
+                batch.put("created_at", rs.getTimestamp("created_at").toString());
                 batches.add(batch);
             }
         } catch (Exception e) {
@@ -558,9 +583,8 @@ public class GeocodeController {
         return ResponseEntity.ok(batches);
     }
 
-    // Get batch results or CSV download
     @GetMapping("/batch/{id}")
-    public ResponseEntity<Object> getBatch(@PathVariable int id, @RequestParam("email") String email, @RequestParam(value = "download", required = false) boolean download) {
+    public ResponseEntity<Object> getBatch(@PathVariable int id, @RequestParam("email") String email, @RequestParam(value = "download", required = false) Boolean download) {
         try (Connection conn = dataSource.getConnection()) {
             PreparedStatement stmt = conn.prepareStatement("SELECT results, status FROM batches WHERE id = ? AND user_id = (SELECT id FROM users WHERE email = ?)");
             stmt.setInt(1, id);
@@ -568,7 +592,7 @@ public class GeocodeController {
             ResultSet rs = stmt.executeQuery();
             if (rs.next()) {
                 String resultsCsv = rs.getString("results");
-                if (download) {
+                if (download != null && download) {
                     HttpHeaders headers = new HttpHeaders();
                     headers.setContentType(MediaType.parseMediaType("text/csv"));
                     headers.setContentDispositionFormData("attachment", "batch-" + id + ".csv");

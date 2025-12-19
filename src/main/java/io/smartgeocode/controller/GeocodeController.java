@@ -607,4 +607,21 @@ public class GeocodeController {
             return ResponseEntity.status(500).body(Map.of("message", "Batch load failed"));
         }
     }
+    @PostMapping("/set-premium")
+        public ResponseEntity<String> setPremium(@RequestBody Map<String, String> request) {
+            String email = request.get("email");
+            if (email == null) return ResponseEntity.badRequest().body("Missing email");
+            try (Connection conn = dataSource.getConnection()) {
+                PreparedStatement stmt = conn.prepareStatement("UPDATE users SET subscription_status = 'premium' WHERE email = ?");
+                stmt.setString(1, email);
+                int updated = stmt.executeUpdate();
+                if (updated > 0) {
+                    return ResponseEntity.ok("Premium activated");
+                } else {
+                    return ResponseEntity.status(404).body("User not found");
+                }
+            } catch (Exception e) {
+                return ResponseEntity.status(500).body("Activation failed");
+            }
+        }
 }

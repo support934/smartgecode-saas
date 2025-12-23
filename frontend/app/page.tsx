@@ -1,7 +1,7 @@
 'use client';
+
 import { useState } from 'react';
 import { Suspense } from 'react';
-import React from 'react';
 
 type GeocodeResult = {
   status: string;
@@ -16,13 +16,23 @@ function GeocodeForm() {
   const [email, setEmail] = useState('');
   const [results, setResults] = useState<GeocodeResult | null>(null);
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');  // New: Error state
   const [subscriptionStatus, setSubscriptionStatus] = useState('free');  // 'free' or 'paid'
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!address.trim() || !email.trim()) return;
+
     setLoading(true);
+    setError('');
+    setResults(null);
+
     try {
       const res = await fetch('/api/geocode?address=' + encodeURIComponent(address));
+      if (!res.ok) {
+        const errData = await res.json();
+        throw new Error(errData.message || `HTTP ${res.status}`);
+      }
       const data = await res.json();
       setResults(data);
       if (data.status === 'success') {
@@ -33,10 +43,12 @@ function GeocodeForm() {
           body: JSON.stringify({ email, address, result: data }),
         });
       }
-    } catch (error) {
-      console.error('Error:', error);
+    } catch (err: any) {
+      console.error('Geocode error:', err);
+      setError(err.message || 'Geocode failed—check address or try again');
+    } finally {
+      setLoading(false);
     }
-    setLoading(false);
   };
 
   const handleUpsell = async () => {
@@ -96,6 +108,7 @@ function GeocodeForm() {
               {loading ? 'Geocoding...' : 'Get Results Now'}
             </button>
           </form>
+          {error && <p className="text-red-600 text-center mt-4 font-semibold">{error}</p>}
           {results && (
             <div className="mt-6 p-4 bg-green-50 rounded-lg">
               <h3 className="font-semibold mb-2">Your Results</h3>
@@ -139,7 +152,7 @@ function GeocodeForm() {
 
 export default function GeocodePage() {
   return (
-    <Suspense fallback={<div>Loading...</div>}>
+    <Suspense fallback={<div className="min-h-screen bg-gray-50 flex items-center justify-center"><p>Loading...</p></div>}>
       <GeocodeForm />
     </Suspense>
   );

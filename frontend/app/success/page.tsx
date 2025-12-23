@@ -1,29 +1,26 @@
 'use client';
+
 import { useEffect, useState } from 'react';
-import { useSearchParams } from 'next/navigation';
+import { useSearchParams, useRouter } from 'next/navigation';
 import { Suspense } from 'react';
-import React from 'react';
 
 function SuccessContent() {
   const searchParams = useSearchParams();
+  const router = useRouter();
   const sessionId = searchParams.get('session_id');
-  const [loggedIn, setLoggedIn] = useState(false);
+  const [mode, setMode] = useState<'signup' | 'login'>('signup');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
+  const [loading, setLoading] = useState(false);
 
-  useEffect(() => {
-    if (sessionId) {
-      console.log('Subscription success:', sessionId);
-      fetch('/api/confirm-subscription', { method: 'POST', body: JSON.stringify({ sessionId }) });
-    }
-  }, [sessionId]);
-
-  const handleLogin = async (e: React.FormEvent) => {
+  const handleAuth = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
+    setLoading(true);
+    const endpoint = mode === 'signup' ? '/api/signup' : '/api/login';
     try {
-      const res = await fetch('/api/login', {
+      const res = await fetch(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email, password }),
@@ -31,25 +28,33 @@ function SuccessContent() {
       const data = await res.json();
       if (res.ok) {
         localStorage.setItem('token', data.token);
-        setLoggedIn(true);
-        window.location.href = '/dashboard';
+        localStorage.setItem('userId', data.userId);
+        localStorage.setItem('email', email);
+        // Activate premium if Stripe success
+        if (sessionId) {
+          const premiumRes = await fetch('/api/set-premium', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ email }),
+          });
+          const premiumData = await premiumRes.json();
+          console.log('Premium activation:', premiumData);
+        }
+        router.push('/dashboard');
       } else {
-        setError(data.message || 'Login failed—try again');
+        if (data.message && data.message.includes('already exists')) {
+          setMode('login');
+          setError('Account exists—log in with your password below');
+        } else {
+          setError(data.message || 'Invalid email or password');
+        }
       }
-    } catch (error) {
+    } catch (err) {
       setError('Network error—check connection and try again');
+    } finally {
+      setLoading(false);
     }
   };
-
-  if (loggedIn) {
-    return (
-      <div className="min-h-screen bg-gradient-to-br from-red-50 to-white flex items-center justify-center p-4">
-        <div className="text-center">
-          <p className="text-red-600">Redirecting to dashboard...</p>
-        </div>
-      </div>
-    );
-  }
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-red-50 to-white flex items-center justify-center p-4">
@@ -61,42 +66,45 @@ function SuccessContent() {
             <i className="fas fa-crown text-yellow-500 mr-2"></i>
             <span className="font-semibold text-red-800">Premium Unlocked</span>
           </div>
-          <p className="text-gray-600">Batch geocoding ready. Log in to upload CSVs and get started.</p>
+          <p className="text-gray-600">
+            {mode === 'signup' ? 'Create your account to start batch geocoding' : 'Welcome back! Log in to your dashboard'}
+          </p>
         </div>
         {error && (
-          <div className="text-red-500 text-center mb-4 text-sm p-3 bg-red-50 rounded">
+          <div className="text-red-600 text-center mb-6 p-4 bg-red-50 rounded-lg font-semibold">
             {error}
-            {error.includes('already exists') && (
-              <p className="text-red-600 mt-1">
-                <a href="/success" className="underline font-semibold">Log in instead</a>
-              </p>
-            )}
           </div>
         )}
-        <form onSubmit={handleLogin} className="space-y-4">
+        <form onSubmit={handleAuth} className="space-y-4">
           <input
             type="email"
             placeholder="Email"
             value={email}
             onChange={(e) => setEmail(e.target.value)}
-            className="w-full p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-transparent"
             required
+            className="w-full p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-transparent"
           />
           <input
             type="password"
             placeholder="Password"
             value={password}
             onChange={(e) => setPassword(e.target.value)}
-            className="w-full p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-transparent"
             required
+            className="w-full p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-transparent"
           />
-          <button type="submit" className="w-full bg-red-600 text-white p-3 rounded-lg hover:bg-red-700 font-semibold">
-            Log In to Dashboard
+          <button
+            type="submit"
+            disabled={loading}
+            className="w-full bg-red-600 text-white p-3 rounded-lg hover:bg-red-700 font-semibold disabled:opacity-50"
+          >
+            {loading ? 'Processing...' : mode === 'signup' ? 'Create Account & Access Dashboard' : 'Log In to Dashboard'}
           </button>
         </form>
-        <p className="text-center mt-4 text-sm text-gray-500">
-          No account? <a href="/signup" className="text-red-600 hover:underline font-semibold">Sign up</a>
-        </p>
+        {mode === 'login' && (
+          <p className="text-center mt-6 text-sm text-gray-500">
+            Forgot password? <a href="/forgot-password" className="text-red-600 hover:underline font-semibold">Reset here</a>
+          </p>
+        )}
       </div>
     </div>
   );

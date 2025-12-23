@@ -607,4 +607,21 @@ public class GeocodeController {
             return ResponseEntity.status(500).body(Map.of("message", "Batch load failed"));
         }
     }
+        @GetMapping("/me")
+        public ResponseEntity<Map<String, Object>> getMe(@RequestParam("email") String email) {
+        Map<String, Object> response = new HashMap<>();
+        try (Connection conn = dataSource.getConnection()) {
+            PreparedStatement stmt = conn.prepareStatement("SELECT subscription_status FROM users WHERE email = ?");
+            stmt.setString(1, email);
+            ResultSet rs = stmt.executeQuery();
+            if (rs.next()) {
+                response.put("subscription_status", rs.getString("subscription_status"));
+                return ResponseEntity.ok(response);
+            } else {
+                return ResponseEntity.status(404).body(Map.of("message", "User not found"));
+            }
+        } catch (Exception e) {
+            return ResponseEntity.status(500).body(Map.of("message", "Failed"));
+        }
+    }
 }

@@ -1,81 +1,146 @@
 'use client';
-import { useState } from 'react';
 
-export default function Dashboard() {
-  const [file, setFile] = useState<File | null>(null);
+import { useState, useEffect } from 'react';  // Fixed: Import hooks directly
+import { Suspense } from 'react';
+
+type GeocodeResult = {
+  status: string;
+  lat?: string;
+  lng?: string;
+  formatted_address?: string;
+  message?: string;
+};
+
+function GeocodeForm() {
+  const [address, setAddress] = useState('');
   const [email, setEmail] = useState('');
+  const [results, setResults] = useState<GeocodeResult | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [subscriptionStatus, setSubscriptionStatus] = useState('free');  // 'free' or 'paid'
 
-  const handleUpload = async () => {
-    if (!file || !email) return;
-    const formData = new FormData();
-    formData.append('file', file);
-    formData.append('email', email);
-    const res = await fetch('/api/batch-geocode', {
-      method: 'POST',
-      body: formData,
-    });
-    if (res.ok) {
-      alert('Batch processed! Check your email for results.');
-    } else {
-      alert('Upload failed—try again.');
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setLoading(true);
+    try {
+      const res = await fetch('/api/geocode?address=' + encodeURIComponent(address));
+      const data = await res.json();
+      setResults(data);
+      if (data.status === 'success') {
+        // Send email
+        await fetch('/api/email', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email, address, result: data }),
+        });
+      }
+    } catch (error) {
+      console.error('Error:', error);
+    }
+    setLoading(false);
+  };
+
+  const handleUpsell = async () => {
+    try {
+      const res = await fetch('/api/checkout', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email }),
+      });
+      const data = await res.json();
+      if (data.url) {
+        window.location.href = data.url;
+      }
+    } catch (error) {
+      console.error('Upsell error:', error);
     }
   };
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100">
-      <header className="bg-blue-600 text-white p-4 shadow-lg">
+    <div className="min-h-screen bg-white">
+      <header className="bg-red-600 text-white p-4 shadow-lg">
         <div className="max-w-6xl mx-auto flex justify-between items-center">
-          <h1 className="text-2xl font-bold">smartgeocode Dashboard</h1>
-          <div className="flex items-center space-x-4">
-            <span className="bg-green-500 px-3 py-1 rounded-full text-sm">Premium</span>
-            <button className="bg-white text-blue-600 px-4 py-2 rounded hover:bg-gray-100">Logout</button>
+          <h1 className="text-2xl font-bold">Smartgeocode</h1>
+          <div className="space-x-4">
+            {subscriptionStatus === 'free' && <button onClick={handleUpsell} className="bg-white text-red-600 px-4 py-2 rounded-lg hover:bg-gray-100 font-semibold">
+              Upgrade to Premium ($29/mo)
+            </button>}
+            <span className="bg-white text-red-600 px-3 py-1 rounded-full text-sm font-semibold">Premium</span>
           </div>
         </div>
       </header>
       <main className="max-w-4xl mx-auto p-8">
-        <div className="text-center mb-8">
-          <h2 className="text-3xl font-bold text-gray-800 mb-2">Welcome Back!</h2>
-          <p className="text-gray-600">Upload CSV for batch geocoding. Results emailed instantly.</p>
-        </div>
-        <div className="grid md:grid-cols-2 gap-8">
-          <div className="bg-white p-6 rounded-xl shadow-md">
-            <h3 className="text-xl font-semibold mb-4">Upload CSV</h3>
+        <section className="text-center mb-8">
+          <h2 className="text-4xl font-bold text-gray-800 mb-4">Stop Wasting Time on Address Validation</h2>
+          <p className="text-xl text-gray-600 mb-6">Get precise lat/lng coordinates in seconds. Save your team hours—free trial for singles, premium for unlimited batches at $29/mo.</p>
+        </section>
+        <div className="bg-gray-50 rounded-xl shadow-lg p-8 mb-8">
+          <h3 className="text-2xl font-bold text-center mb-6 text-red-600">Try Free Single Lookup</h3>
+          <form onSubmit={handleSubmit} className="space-y-4 max-w-md mx-auto">
             <input
-              type="file"
-              accept=".csv"
-              onChange={(e) => setFile(e.target.files?.[0] || null)}  // Null-safe optional chaining
-              className="w-full p-2 border rounded mb-4"
+              type="text"
+              placeholder="Enter address (e.g., Chennai, India)"
+              value={address}
+              onChange={(e) => setAddress(e.target.value)}
+              className="w-full p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-transparent"
+              required
             />
             <input
               type="email"
-              placeholder="Email for results"
+              placeholder="Your email for results"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
-              className="w-full p-2 border rounded mb-4"
+              className="w-full p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-transparent"
+              required
             />
-            <button
-              onClick={handleUpload}
-              disabled={!file || !email}
-              className="w-full bg-blue-600 text-white p-3 rounded-lg hover:bg-blue-700 disabled:opacity-50"
-            >
-              Process Batch
+            <button type="submit" disabled={loading} className="w-full bg-red-600 text-white p-3 rounded-lg hover:bg-red-700 font-semibold disabled:opacity-50">
+              {loading ? 'Geocoding...' : 'Get Results Now'}
             </button>
-          </div>
-          <div className="bg-white p-6 rounded-xl shadow-md">
-            <h3 className="text-xl font-semibold mb-4">Past Batches</h3>
-            <div className="space-y-2">
-              <div className="flex justify-between p-3 bg-gray-50 rounded">
-                <span>Batch 1 - 50 addresses</span>
-                <span className="text-green-600">Complete</span>
-              </div>
-              <div className="flex justify-between p-3 bg-gray-50 rounded">
-                <span>Batch 2 - 100 addresses</span>
-                <span className="text-yellow-600">Processing</span>
-              </div>
+          </form>
+          {results && (
+            <div className="mt-6 p-4 bg-green-50 rounded-lg">
+              <h3 className="font-semibold mb-2">Your Results</h3>
+              <p><strong>Status:</strong> {results.status}</p>
+              {results.status === 'success' && (
+                <div className="mt-4 space-y-2">
+                  <p><strong>Latitude:</strong> {results.lat}</p>
+                  <p><strong>Longitude:</strong> {results.lng}</p>
+                  <p><strong>Formatted Address:</strong> {results.formatted_address}</p>
+                  <p className="text-sm text-gray-500">Results emailed to you. Ready for batches? Upgrade and save time on hundreds of addresses.</p>
+                  <button onClick={handleUpsell} className="mt-4 bg-green-600 text-white px-4 py-2 rounded-lg hover:bg-green-700">
+                    Upgrade to Batch ($29/mo)
+                  </button>
+                </div>
+              )}
+              {results.status === 'error' && <p className="text-red-500">{results.message}</p>}
             </div>
-          </div>
+          )}
         </div>
+        <section className="grid md:grid-cols-3 gap-6">
+          <div className="bg-white p-6 rounded-xl shadow-md text-center">
+            <i className="fas fa-bolt text-3xl text-red-500 mb-4"></i>
+            <h3 className="font-semibold mb-2">Lightning-Fast Results</h3>
+            <p className="text-gray-600">Accurate lat/lng in seconds—no API limits for free trials. Save your team hours on manual work.</p>
+          </div>
+          <div className="bg-white p-6 rounded-xl shadow-md text-center">
+            <i className="fas fa-envelope-open text-3xl text-red-500 mb-4"></i>
+            <h3 className="font-semibold mb-2">Lead Generation Built-In</h3>
+            <p className="text-gray-600">Capture emails with every lookup—grow your list effortlessly and convert visitors to customers.</p>
+          </div>
+          <div className="bg-white p-6 rounded-xl shadow-md text-center">
+            <i className="fas fa-rocket text-3xl text-red-500 mb-4"></i>
+            <h3 className="font-semibold mb-2">Scale with Premium</h3>
+            <p className="text-gray-600">Unlimited CSV batch processing for $29/mo—power your business with fast, reliable geocoding.</p>
+          </div>
+        </section>
       </main>
     </div>
+  );
+}
+
+export default function GeocodePage() {
+  return (
+    <Suspense fallback={<div>Loading...</div>}>
+      <GeocodeForm />
+    </Suspense>
   );
 }

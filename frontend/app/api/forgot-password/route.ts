@@ -5,7 +5,7 @@ export async function POST(request: NextRequest) {
   const backendUrl = process.env.BACKEND_URL || 'https://smartgeocode.io';
 
   try {
-    const res = await fetch(`${backendUrl}/api/signup`, {
+    const res = await fetch(`${backendUrl}/api/forgot-password`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),

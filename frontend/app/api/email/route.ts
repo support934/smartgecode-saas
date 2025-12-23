@@ -4,7 +4,7 @@ export async function POST(request: NextRequest) {
   const payload = await request.json();
 
   try {
-    const res = await fetch('https://api-java-production-fb09.up.railway.app/api/email', {
+    const res = await fetch('https://smartgeocode.io/api/email', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload)

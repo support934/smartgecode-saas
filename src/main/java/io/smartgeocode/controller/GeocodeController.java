@@ -485,30 +485,56 @@ public Map<String, Object> geocode(@RequestParam("address") String addr, @Reques
                     return ResponseEntity.badRequest().body(response);
                 }
 
-                String[] line;
-                while ((line = csvReader.readNext()) != null) {
-                    Map<String, String> rowMap = new HashMap<>();
-                    for (int i = 0; i < headers.length; i++) {
-                        rowMap.put(headers[i], line.length > i ? line[i].trim() : "");
-                    }
-                    String address = rowMap.get("address");
-                    if (address.isEmpty() || address.equalsIgnoreCase("N/A")) {
-                        rowMap.put("status", "skipped");
-                        rowMap.put("message", "Blank or N/A address");
-                    } else {
-                        Map<String, Object> geo = geocode(address, null);
-                        if (geo.get("status").equals("success")) {
-                            rowMap.put("lat", (String) geo.get("lat"));
-                            rowMap.put("lng", (String) geo.get("lng"));
-                            rowMap.put("formatted_address", (String) geo.get("formatted_address"));
-                            rowMap.put("status", "success");
-                        } else {
-                            rowMap.put("status", "error");
-                            rowMap.put("message", (String) geo.get("message"));
-                        }
-                    }
-                    fullResults.add(rowMap);
-                }
+                // Inside batchGeocode, replace the row processing loop:
+String[] line;
+int row = 1;
+while ((line = csvReader.readNext()) != null) {
+    row++;
+    Map<String, String> rowMap = new HashMap<>();
+    for (int i = 0; i < headers.length; i++) {
+        String header = headers[i].toLowerCase();
+        rowMap.put(header, line.length > i ? line[i].trim() : "");
+    }
+
+    // Build smart query from columns
+    StringBuilder query = new StringBuilder();
+    String address = rowMap.get("address");
+    if (address != null && !address.isEmpty() && !address.equalsIgnoreCase("N/A")) {
+        query.append(address);
+    }
+    String name = rowMap.get("name");
+    if (name != null && !name.isEmpty()) query.append(", ").append(name);
+    String city = rowMap.get("city");
+    if (city != null && !city.isEmpty()) query.append(", ").append(city);
+    String state = rowMap.get("state");
+    if (state != null && !state.isEmpty()) query.append(", ").append(state);
+    String zip = rowMap.get("zip");
+    if (zip != null && !zip.isEmpty()) query.append(", ").append(zip);
+    String country = rowMap.get("country");  // Optional
+    if (country != null && !country.isEmpty()) {
+        query.append(", ").append(country);
+    } else if (zip.matches("\\d{5}(-\\d{4})?")) {
+        query.append(", USA");  // US zip bias
+    }
+
+    String finalQuery = query.toString().trim();
+    if (finalQuery.isEmpty() || finalQuery.equalsIgnoreCase("N/A")) {
+        rowMap.put("status", "skipped");
+        rowMap.put("message", "Blank or N/A address");
+    } else {
+        Map<String, Object> geo = geocode(finalQuery, null);
+        if (geo.get("status").equals("success")) {
+            rowMap.put("lat", (String) geo.get("lat"));
+            rowMap.put("lng", (String) geo.get("lng"));
+            rowMap.put("formatted_address", (String) geo.get("formatted_address"));
+            rowMap.put("status", "success");
+        } else {
+            rowMap.put("status", "error");
+            rowMap.put("message", (String) geo.get("message"));
+        }
+    }
+    fullResults.add(rowMap);
+}
             }
 
             // Build CSV results

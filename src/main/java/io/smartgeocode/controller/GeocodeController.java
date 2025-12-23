@@ -107,69 +107,68 @@ public class GeocodeController {
     }
 
     @GetMapping("/geocode")
-    public Map<String, Object> geocode(@RequestParam("address") String addr, @RequestParam(value = "addr", required = false) String addrFallback) {
-        String finalAddr = addr != null ? addr : addrFallback;
-        if (finalAddr == null || finalAddr.isEmpty()) {
-            return Map.of("status", "error", "message", "Missing address param (use ?address= or ?addr=)");
-        }
-        try {
-            System.out.println("=== GEOCODE HIT: param = " + finalAddr + " at " + new Date());
-
-            String encodedAddr = finalAddr.replace(" ", "+").replace(",", "%2C");
-            String yourEmail = "sumeet.vasu@gmail.com";  // Real email
-            String url = "https://nominatim.openstreetmap.org/search?format=json&email=" + yourEmail + "&q=" + encodedAddr + "&limit=1";
-
-            var request = HttpRequest.newBuilder()
-                    .uri(URI.create(url))
-                    .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-                    .header("Referer", "https://smartgeocode.io")
-                    .build();
-
-            HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
-
-            System.out.println("=== NOMINATIM STATUS: " + response.statusCode());
-            System.out.println("=== NOMINATIM RAW BODY: " + response.body());
-
-            if (response.statusCode() != 200) {
-                return Map.of("status", "error", "message", "Nominatim API error: " + response.statusCode() + " - " + response.body());
-            }
-
-            Object parsed = mapper.readValue(response.body(), Object.class);
-            if (parsed instanceof List && ((List<?>) parsed).isEmpty()) {
-                return Map.of("status", "error", "message", "No results found for address: " + finalAddr);
-            }
-
-            if (parsed instanceof Map && ((Map<?, ?>) parsed).containsKey("error")) {
-                return Map.of("status", "error", "message", "Nominatim error: " + ((Map<?, ?>) parsed).get("error"));
-            }
-
-            @SuppressWarnings("unchecked")
-            List<Map<String, Object>> results = (List<Map<String, Object>>) parsed;
-            if (results.isEmpty()) {
-                return Map.of("status", "error", "message", "No results found for address: " + finalAddr);
-            }
-
-            Map<String, Object> result = results.get(0);
-            String lat = (String) result.get("lat");
-            String lon = (String) result.get("lon");
-            String displayName = (String) result.get("display_name");
-
-            Map<String, Object> responseMap = new HashMap<>();
-            responseMap.put("status", "success");
-            responseMap.put("lat", lat);
-            responseMap.put("lng", lon);
-            responseMap.put("formatted_address", displayName);
-
-            System.out.println("=== GEOCODE SUCCESS: " + responseMap);
-            return responseMap;
-
-        } catch (Exception e) {
-            System.out.println("=== GEOCODE EXCEPTION: " + e.getMessage());
-            e.printStackTrace();
-            return Map.of("status", "error", "message", "Internal error");
-        }
+public Map<String, Object> geocode(@RequestParam("address") String addr, @RequestParam(value = "addr", required = false) String addrFallback) {
+    String finalAddr = addr != null ? addr : addrFallback;
+    if (finalAddr == null || finalAddr.isEmpty()) {
+        return Map.of("status", "error", "message", "Missing address param");
     }
+    try {
+        // Improve query: add USA bias for better US results
+        String query = finalAddr.trim();
+        if (!query.toLowerCase().contains("usa") && !query.toLowerCase().contains("united states")) {
+            query += ", USA";  // Bias to US
+        }
 
+        String encodedAddr = query.replace(" ", "+").replace(",", "%2C");
+        String yourEmail = "sumeet.vasu@gmail.com";
+        String url = "https://nominatim.openstreetmap.org/search?format=json&email=" + yourEmail + "&q=" + encodedAddr + "&limit=1&countrycodes=us";
+
+        var request = HttpRequest.newBuilder()
+                .uri(URI.create(url))
+                .header("User-Agent", "SmartgecodeApp/1.0 (sumeet.vasu@gmail.com)")
+                .header("Referer", "https://smartgecode.io")
+                .build();
+
+        HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
+
+        if (response.statusCode() != 200) {
+            return Map.of("status", "error", "message", "Nominatim error: " + response.statusCode());
+        }
+
+        Object parsed = mapper.readValue(response.body(), Object.class);
+        if (parsed instanceof List && ((List<?>) parsed).isEmpty()) {
+            return Map.of("status", "error", "message", "No results found for: " + finalAddr);
+        }
+
+        if (parsed instanceof Map && ((Map<?, ?>) parsed).containsKey("error")) {
+            return Map.of("status", "error", "message", "Nominatim error: " + ((Map<?, ?>) parsed).get("error"));
+        }
+
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> results = (List<Map<String, Object>>) parsed;
+        if (results.isEmpty()) {
+            return Map.of("status", "error", "message", "No results found for: " + finalAddr);
+        }
+
+        Map<String, Object> result = results.get(0);
+        String lat = (String) result.get("lat");
+        String lon = (String) result.get("lon");
+        String displayName = (String) result.get("display_name");
+
+        Map<String, Object> responseMap = new HashMap<>();
+        responseMap.put("status", "success");
+        responseMap.put("lat", lat);
+        responseMap.put("lng", lon);
+        responseMap.put("formatted_address", displayName);
+
+        return responseMap;
+
+    } catch (Exception e) {
+        System.out.println("=== GEOCODE EXCEPTION: " + e.getMessage());
+        e.printStackTrace();
+        return Map.of("status", "error", "message", "Geocode failed—try more specific address");
+    }
+}
     @PostMapping("/email")
     public ResponseEntity<String> sendEmail(@RequestBody Map<String, Object> payload) {
         String email = (String) payload.get("email");

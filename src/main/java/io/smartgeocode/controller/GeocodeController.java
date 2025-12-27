@@ -106,54 +106,67 @@ public class GeocodeController {
         }
     }
 
-   @GetMapping("/geocode")
-public Map<String, Object> geocode(@RequestParam("address") String addr, @RequestParam(value = "addr", required = false) String addrFallback) {
-    String finalAddr = addr != null ? addr : addrFallback;
-    if (finalAddr == null || finalAddr.trim().isEmpty()) {
-        return Map.of("status", "error", "message", "Missing address");
-    }
-    String query = finalAddr.trim();
-    try {
-        String encodedAddr = query.replace(" ", "+").replace(",", "%2C");
-        String yourEmail = "sumeet.vasu@gmail.com";
-        String url = "https://nominatim.openstreetmap.org/search?format=json&email=" + yourEmail + "&q=" + encodedAddr + "&limit=1";
-
-        var request = HttpRequest.newBuilder()
-                .uri(URI.create(url))
-                .header("User-Agent", "SmartgeocodeApp/1.0 (sumeet.vasu@gmail.com)")
-                .header("Referer", "https://smartgeocode.io")
-                .build();
-
-        HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
-
-        if (response.statusCode() != 200) {
-            return Map.of("status", "error", "message", "Service error—try again");
+    @GetMapping("/geocode")
+    public Map<String, Object> geocode(@RequestParam("address") String addr, @RequestParam(value = "addr", required = false) String addrFallback) {
+        String finalAddr = addr != null ? addr : addrFallback;
+        if (finalAddr == null || finalAddr.isEmpty()) {
+            return Map.of("status", "error", "message", "Missing address param (use ?address= or ?addr=)");
         }
+        try {
+            System.out.println("=== GEOCODE HIT: param = " + finalAddr + " at " + new Date());
 
-        Object parsed = mapper.readValue(response.body(), Object.class);
-        if (parsed instanceof List && ((List<?>) parsed).isEmpty()) {
-            return Map.of("status", "error", "message", "No results—try more details (city, state, country)");
+            String encodedAddr = finalAddr.replace(" ", "+").replace(",", "%2C");
+            String yourEmail = "sumeet.vasu@gmail.com";  // Real email
+            String url = "https://nominatim.openstreetmap.org/search?format=json&email=" + yourEmail + "&q=" + encodedAddr + "&limit=1";
+
+            var request = HttpRequest.newBuilder()
+                    .uri(URI.create(url))
+                    .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+                    .header("Referer", "https://smartgeocode.io")
+                    .build();
+
+            HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
+
+            if (response.statusCode() != 200) {
+                return Map.of("status", "error", "message", "Nominatim API error: " + response.statusCode() + " - " + response.body());
+            }
+
+            Object parsed = mapper.readValue(response.body(), Object.class);
+            if (parsed instanceof List && ((List<?>) parsed).isEmpty()) {
+                return Map.of("status", "error", "message", "No results found for address: " + finalAddr);
+            }
+
+            if (parsed instanceof Map && ((Map<?, ?>) parsed).containsKey("error")) {
+                return Map.of("status", "error", "message", "Nominatim error: " + ((Map<?, ?>) parsed).get("error"));
+            }
+
+            @SuppressWarnings("unchecked")
+            List<Map<String, Object>> results = (List<Map<String, Object>>) parsed;
+            if (results.isEmpty()) {
+                return Map.of("status", "error", "message", "No results found for address: " + finalAddr);
+            }
+
+            Map<String, Object> result = results.get(0);
+            String lat = (String) result.get("lat");
+            String lon = (String) result.get("lon");
+            String displayName = (String) result.get("display_name");
+
+            Map<String, Object> responseMap = new HashMap<>();
+            responseMap.put("status", "success");
+            responseMap.put("lat", lat);
+            responseMap.put("lng", lon);
+            responseMap.put("formatted_address", displayName);
+
+            System.out.println("=== GEOCODE SUCCESS: " + responseMap);
+            return responseMap;
+
+        } catch (Exception e) {
+            System.out.println("=== GEOCODE EXCEPTION: " + e.getMessage());
+            e.printStackTrace();
+            return Map.of("status", "error", "message", "Internal error");
         }
-
-        @SuppressWarnings("unchecked")
-        List<Map<String, Object>> results = (List<Map<String, Object>>) parsed;
-        Map<String, Object> result = results.get(0);
-        String lat = (String) result.get("lat");
-        String lon = (String) result.get("lon");
-        String displayName = (String) result.get("display_name");
-
-        Map<String, Object> responseMap = new HashMap<>();
-        responseMap.put("status", "success");
-        responseMap.put("lat", lat);
-        responseMap.put("lng", lon);
-        responseMap.put("formatted_address", displayName);
-
-        return responseMap;
-
-    } catch (Exception e) {
-        return Map.of("status", "error", "message", "Geocode failed—try more specific address");
     }
-}
+
     @PostMapping("/email")
     public ResponseEntity<String> sendEmail(@RequestBody Map<String, Object> payload) {
         String email = (String) payload.get("email");
@@ -485,56 +498,30 @@ public Map<String, Object> geocode(@RequestParam("address") String addr, @Reques
                     return ResponseEntity.badRequest().body(response);
                 }
 
-                // Inside batchGeocode, replace the row processing loop:
-String[] line;
-int row = 1;
-while ((line = csvReader.readNext()) != null) {
-    row++;
-    Map<String, String> rowMap = new HashMap<>();
-    for (int i = 0; i < headers.length; i++) {
-        String header = headers[i].toLowerCase();
-        rowMap.put(header, line.length > i ? line[i].trim() : "");
-    }
-
-    // Build smart query from columns
-    StringBuilder query = new StringBuilder();
-    String address = rowMap.get("address");
-    if (address != null && !address.isEmpty() && !address.equalsIgnoreCase("N/A")) {
-        query.append(address);
-    }
-    String name = rowMap.get("name");
-    if (name != null && !name.isEmpty()) query.append(", ").append(name);
-    String city = rowMap.get("city");
-    if (city != null && !city.isEmpty()) query.append(", ").append(city);
-    String state = rowMap.get("state");
-    if (state != null && !state.isEmpty()) query.append(", ").append(state);
-    String zip = rowMap.get("zip");
-    if (zip != null && !zip.isEmpty()) query.append(", ").append(zip);
-    String country = rowMap.get("country");  // Optional
-    if (country != null && !country.isEmpty()) {
-        query.append(", ").append(country);
-    } else if (zip.matches("\\d{5}(-\\d{4})?")) {
-        query.append(", USA");  // US zip bias
-    }
-
-    String finalQuery = query.toString().trim();
-    if (finalQuery.isEmpty() || finalQuery.equalsIgnoreCase("N/A")) {
-        rowMap.put("status", "skipped");
-        rowMap.put("message", "Blank or N/A address");
-    } else {
-        Map<String, Object> geo = geocode(finalQuery, null);
-        if (geo.get("status").equals("success")) {
-            rowMap.put("lat", (String) geo.get("lat"));
-            rowMap.put("lng", (String) geo.get("lng"));
-            rowMap.put("formatted_address", (String) geo.get("formatted_address"));
-            rowMap.put("status", "success");
-        } else {
-            rowMap.put("status", "error");
-            rowMap.put("message", (String) geo.get("message"));
-        }
-    }
-    fullResults.add(rowMap);
-}
+                String[] line;
+                while ((line = csvReader.readNext()) != null) {
+                    Map<String, String> rowMap = new HashMap<>();
+                    for (int i = 0; i < headers.length; i++) {
+                        rowMap.put(headers[i], line.length > i ? line[i].trim() : "");
+                    }
+                    String address = rowMap.get("address");
+                    if (address.isEmpty() || address.equalsIgnoreCase("N/A")) {
+                        rowMap.put("status", "skipped");
+                        rowMap.put("message", "Blank or N/A address");
+                    } else {
+                        Map<String, Object> geo = geocode(address, null);
+                        if (geo.get("status").equals("success")) {
+                            rowMap.put("lat", (String) geo.get("lat"));
+                            rowMap.put("lng", (String) geo.get("lng"));
+                            rowMap.put("formatted_address", (String) geo.get("formatted_address"));
+                            rowMap.put("status", "success");
+                        } else {
+                            rowMap.put("status", "error");
+                            rowMap.put("message", (String) geo.get("message"));
+                        }
+                    }
+                    fullResults.add(rowMap);
+                }
             }
 
             // Build CSV results
@@ -615,23 +602,6 @@ while ((line = csvReader.readNext()) != null) {
             }
         } catch (Exception e) {
             return ResponseEntity.status(500).body(Map.of("message", "Batch load failed"));
-        }
-    }
-        @GetMapping("/me")
-        public ResponseEntity<Map<String, Object>> getMe(@RequestParam("email") String email) {
-        Map<String, Object> response = new HashMap<>();
-        try (Connection conn = dataSource.getConnection()) {
-            PreparedStatement stmt = conn.prepareStatement("SELECT subscription_status FROM users WHERE email = ?");
-            stmt.setString(1, email);
-            ResultSet rs = stmt.executeQuery();
-            if (rs.next()) {
-                response.put("subscription_status", rs.getString("subscription_status"));
-                return ResponseEntity.ok(response);
-            } else {
-                return ResponseEntity.status(404).body(Map.of("message", "User not found"));
-            }
-        } catch (Exception e) {
-            return ResponseEntity.status(500).body(Map.of("message", "Failed"));
         }
     }
 }

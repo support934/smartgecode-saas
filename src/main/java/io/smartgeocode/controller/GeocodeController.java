@@ -127,6 +127,9 @@ public class GeocodeController {
 
             HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
 
+            System.out.println("=== NOMINATIM STATUS: " + response.statusCode());
+            System.out.println("=== NOMINATIM RAW BODY: " + response.body());
+
             if (response.statusCode() != 200) {
                 return Map.of("status", "error", "message", "Nominatim API error: " + response.statusCode() + " - " + response.body());
             }
@@ -431,16 +434,28 @@ public class GeocodeController {
         }
     }
 
-    // Set premium on Stripe success
+    // Set premium on Stripe success (DTO for reliable binding)
+    private static class PremiumRequest {
+        private String email;
+
+        public String getEmail() {
+            return email;
+        }
+
+        public void setEmail(String email) {
+            this.email = email;
+        }
+    }
+
     @PostMapping("/set-premium")
-    public ResponseEntity<String> setPremium(@RequestBody Map<String, String> request) {
-        String email = request.get("email");
-        if (email == null) {
+    public ResponseEntity<String> setPremium(@RequestBody PremiumRequest request) {
+        String email = request.getEmail();
+        if (email == null || email.trim().isEmpty()) {
             return ResponseEntity.badRequest().body("Missing email");
         }
         try (Connection conn = dataSource.getConnection()) {
             PreparedStatement stmt = conn.prepareStatement("UPDATE users SET subscription_status = 'premium' WHERE email = ?");
-            stmt.setString(1, email);
+            stmt.setString(1, email.trim());
             int updated = stmt.executeUpdate();
             if (updated > 0) {
                 return ResponseEntity.ok("Premium activated");
@@ -448,7 +463,27 @@ public class GeocodeController {
                 return ResponseEntity.status(404).body("User not found");
             }
         } catch (Exception e) {
+            e.printStackTrace();
             return ResponseEntity.status(500).body("Activation failed");
+        }
+    }
+
+    // Get user subscription status
+    @GetMapping("/me")
+    public ResponseEntity<Map<String, Object>> getMe(@RequestParam("email") String email) {
+        Map<String, Object> response = new HashMap<>();
+        try (Connection conn = dataSource.getConnection()) {
+            PreparedStatement stmt = conn.prepareStatement("SELECT subscription_status FROM users WHERE email = ?");
+            stmt.setString(1, email);
+            ResultSet rs = stmt.executeQuery();
+            if (rs.next()) {
+                response.put("subscription_status", rs.getString("subscription_status"));
+                return ResponseEntity.ok(response);
+            } else {
+                return ResponseEntity.status(404).body(Map.of("message", "User not found"));
+            }
+        } catch (Exception e) {
+            return ResponseEntity.status(500).body(Map.of("message", "Failed"));
         }
     }
 
@@ -502,14 +537,37 @@ public class GeocodeController {
                 while ((line = csvReader.readNext()) != null) {
                     Map<String, String> rowMap = new HashMap<>();
                     for (int i = 0; i < headers.length; i++) {
-                        rowMap.put(headers[i], line.length > i ? line[i].trim() : "");
+                        String header = headers[i].toLowerCase();
+                        rowMap.put(header, line.length > i ? line[i].trim() : "");
                     }
+
+                    // Build smart query
+                    StringBuilder query = new StringBuilder();
                     String address = rowMap.get("address");
-                    if (address.isEmpty() || address.equalsIgnoreCase("N/A")) {
+                    if (address != null && !address.isEmpty() && !address.equalsIgnoreCase("N/A")) {
+                        query.append(address);
+                    }
+                    String name = rowMap.get("name");
+                    if (name != null && !name.isEmpty()) query.append(", ").append(name);
+                    String city = rowMap.get("city");
+                    if (city != null && !city.isEmpty()) query.append(", ").append(city);
+                    String state = rowMap.get("state");
+                    if (state != null && !state.isEmpty()) query.append(", ").append(state);
+                    String zip = rowMap.get("zip");
+                    if (zip != null && !zip.isEmpty()) query.append(", ").append(zip);
+                    String country = rowMap.get("country");
+                    if (country != null && !country.isEmpty()) {
+                        query.append(", ").append(country);
+                    } else if (zip.matches("\\d{5}(-\\d{4})?")) {
+                        query.append(", USA");
+                    }
+
+                    String finalQuery = query.toString().trim();
+                    if (finalQuery.isEmpty() || finalQuery.equalsIgnoreCase("N/A")) {
                         rowMap.put("status", "skipped");
                         rowMap.put("message", "Blank or N/A address");
                     } else {
-                        Map<String, Object> geo = geocode(address, null);
+                        Map<String, Object> geo = geocode(finalQuery, null);
                         if (geo.get("status").equals("success")) {
                             rowMap.put("lat", (String) geo.get("lat"));
                             rowMap.put("lng", (String) geo.get("lng"));

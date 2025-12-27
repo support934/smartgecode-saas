@@ -6,6 +6,8 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.net.URI;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.annotation.JsonCreator;
+import com.fasterxml.jackson.annotation.JsonProperty;
 import java.util.Map;
 import java.util.List;
 import java.util.ArrayList;
@@ -413,6 +415,11 @@ public class GeocodeController {
     private static class PremiumRequest {
         private String email;
 
+        @JsonCreator
+        public PremiumRequest(@JsonProperty("email") String email) {
+            this.email = email;
+        }
+
         public String getEmail() {
             return email;
         }
@@ -424,7 +431,7 @@ public class GeocodeController {
 
     @PostMapping("/set-premium")
     public ResponseEntity<String> setPremium(@RequestBody PremiumRequest request) {
-        System.out.println("set-premium called with request: " + request);  // Debug log
+        System.out.println("set-premium called with email: " + request.getEmail());  // Debug log
         String email = request.getEmail();
         if (email == null || email.trim().isEmpty()) {
             return ResponseEntity.badRequest().body("Missing email");

@@ -424,6 +424,7 @@ public class GeocodeController {
 
     @PostMapping("/set-premium")
     public ResponseEntity<String> setPremium(@RequestBody PremiumRequest request) {
+        System.out.println("set-premium called with request: " + request);  // Debug log
         String email = request.getEmail();
         if (email == null || email.trim().isEmpty()) {
             return ResponseEntity.badRequest().body("Missing email");
@@ -433,6 +434,7 @@ public class GeocodeController {
             stmt.setString(1, email.trim());
             int updated = stmt.executeUpdate();
             if (updated > 0) {
+                System.out.println("Premium activated for: " + email.trim());
                 return ResponseEntity.ok("Premium activated");
             } else {
                 return ResponseEntity.status(404).body("User not found");

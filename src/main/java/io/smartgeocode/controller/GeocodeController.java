@@ -657,4 +657,13 @@ public String activatePremium(@RequestParam("email") String email) {
         return "Activation failed";
     }
 }
+@GetMapping("/test-db")
+public String testDbConnection() {
+    try (Connection conn = dataSource.getConnection()) {
+        return "Connection successful: " + conn.getMetaData().getURL();
+    } catch (Exception e) {
+        e.printStackTrace();
+        return "Connection failed: " + e.getMessage();
+    }
+}
 }

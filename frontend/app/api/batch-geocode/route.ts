@@ -1,11 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
-import FormData from 'form-data';
 
 export async function POST(request: NextRequest) {
   try {
     const formData = await request.formData();
-    const file = formData.get('file') as File;
-    const email = formData.get('email') as string;
+    const file = formData.get('file') as File | null;
+    const email = formData.get('email') as string | null;
 
     if (!file || !email) {
       return NextResponse.json({ status: 'error', message: 'Missing file or email' }, { status: 400 });
@@ -15,19 +14,17 @@ export async function POST(request: NextRequest) {
     backendFormData.append('file', file);
     backendFormData.append('email', email);
 
-    const res = await fetch('https://smartgeocode.io/api/batch-geocode', {
+    const backendUrl = process.env.BACKEND_URL || 'https://smartgecode.io';
+
+    const res = await fetch(`${backendUrl}/api/batch-geocode`, {
       method: 'POST',
-      body: backendFormData as unknown as BodyInit,  // Double cast for strict TS
+      body: backendFormData,
     });
 
     const data = await res.json();
-    if (res.ok) {
-      return NextResponse.json(data);
-    } else {
-      return NextResponse.json(data, { status: res.status });
-    }
+    return NextResponse.json(data, { status: res.status });
   } catch (error) {
     console.error('Batch upload proxy error:', error);
-    return NextResponse.json({ status: 'error', message: 'Upload failed' }, { status: 500 });
+    return NextResponse.json({ status: 'error', message: 'Upload failed—check connection' }, { status: 500 });
   }
 }

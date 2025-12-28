@@ -21,7 +21,7 @@ export default function ForgotPassword() {
       });
       const data = await res.json();
       if (res.ok) {
-        setMessage(data.message || 'Reset link sent—check email');
+        setMessage(data.message || 'Reset link sent—check your email');
       } else {
         setError(data.message || 'Reset failed');
       }
@@ -36,23 +36,23 @@ export default function ForgotPassword() {
     <div className="min-h-screen bg-gradient-to-br from-red-50 to-white flex items-center justify-center p-4">
       <div className="max-w-md w-full bg-white rounded-xl shadow-lg p-8">
         <h2 className="text-2xl font-bold text-center mb-6 text-red-600">Forgot Password</h2>
-        {message && <p className="text-green-600 text-center mb-4">{message}</p>}
-        {error && <p className="text-red-600 text-center mb-4">{error}</p>}
-        <form onSubmit={handleSubmit}>
+        {message && <p className="text-green-600 text-center mb-4 font-semibold">{message}</p>}
+        {error && <p className="text-red-600 text-center mb-4 font-semibold">{error}</p>}
+        <form onSubmit={handleSubmit} className="space-y-4">
           <input
             type="email"
             placeholder="Your email"
             value={email}
             onChange={(e) => setEmail(e.target.value)}
             required
-            className="w-full p-3 border rounded mb-4"
+            className="w-full p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-transparent"
           />
-          <button type="submit" disabled={loading} className="w-full bg-red-600 text-white py-3 rounded font-bold hover:bg-red-700 disabled:opacity-50">
+          <button type="submit" disabled={loading} className="w-full bg-red-600 text-white p-3 rounded-lg hover:bg-red-700 font-semibold disabled:opacity-50">
             {loading ? 'Sending...' : 'Send Reset Link'}
           </button>
         </form>
-        <p className="text-center mt-4">
-          <a href="/success" className="text-red-600">Back to Login</a>
+        <p className="text-center mt-6 text-sm text-gray-500">
+          <a href="/success" className="text-red-600 hover:underline font-semibold">Back to Login</a>
         </p>
       </div>
     </div>

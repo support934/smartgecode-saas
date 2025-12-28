@@ -12,11 +12,13 @@ function SuccessContent() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
+  const [premiumMessage, setPremiumMessage] = useState('');
   const [loading, setLoading] = useState(false);
 
   const handleAuth = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
+    setPremiumMessage('');
     setLoading(true);
     const endpoint = mode === 'signup' ? '/api/signup' : '/api/login';
     try {
@@ -38,19 +40,23 @@ function SuccessContent() {
             body: JSON.stringify({ email }),
           });
           const premiumData = await premiumRes.json();
-          console.log('Premium activation:', premiumData);
+          if (premiumRes.ok) {
+            setPremiumMessage('Premium activated successfully!');
+          } else {
+            setError(premiumData.message || 'Premium activation failed—try manual or contact support');
+          }
         }
         router.push('/dashboard');
       } else {
         if (data.message && data.message.includes('already exists')) {
           setMode('login');
-          setError('Account exists—log in with your password below');
+          setError('Account exists—log in below');
         } else {
           setError(data.message || 'Invalid email or password');
         }
       }
     } catch (err) {
-      setError('Network error—check connection and try again');
+      setError('Network error—try again');
     } finally {
       setLoading(false);
     }
@@ -69,6 +75,7 @@ function SuccessContent() {
           <p className="text-gray-600">
             {mode === 'signup' ? 'Create your account to start batch geocoding' : 'Welcome back! Log in to your dashboard'}
           </p>
+          {premiumMessage && <p className="text-green-600 mt-4 font-semibold">{premiumMessage}</p>}
         </div>
         {error && (
           <div className="text-red-600 text-center mb-6 p-4 bg-red-50 rounded-lg font-semibold">

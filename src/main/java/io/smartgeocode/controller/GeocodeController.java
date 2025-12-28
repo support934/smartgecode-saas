@@ -429,28 +429,28 @@ public class GeocodeController {
         }
     }
 
-    @PostMapping("/set-premium")
-    public ResponseEntity<String> setPremium(@RequestBody PremiumRequest request) {
-        System.out.println("set-premium called with email: " + request.getEmail());  // Debug log
-        String email = request.getEmail();
-        if (email == null || email.trim().isEmpty()) {
-            return ResponseEntity.badRequest().body("Missing email");
-        }
-        try (Connection conn = dataSource.getConnection()) {
-            PreparedStatement stmt = conn.prepareStatement("UPDATE users SET subscription_status = 'premium' WHERE email = ?");
-            stmt.setString(1, email.trim());
-            int updated = stmt.executeUpdate();
-            if (updated > 0) {
-                System.out.println("Premium activated for: " + email.trim());
-                return ResponseEntity.ok("Premium activated");
-            } else {
-                return ResponseEntity.status(404).body("User not found");
-            }
-        } catch (Exception e) {
-            e.printStackTrace();
-            return ResponseEntity.status(500).body("Activation failed");
-        }
+   @PostMapping("/set-premium")
+public ResponseEntity<String> setPremium(@RequestBody PremiumRequest request) {
+    System.out.println("set-premium called with: " + request);  // Debug
+    String email = request.getEmail();
+    if (email == null || email.trim().isEmpty()) {
+        return ResponseEntity.badRequest().body("Missing email");
     }
+    try (Connection conn = dataSource.getConnection()) {
+        PreparedStatement stmt = conn.prepareStatement("UPDATE users SET subscription_status = 'premium' WHERE email = ?");
+        stmt.setString(1, email.trim());
+        int updated = stmt.executeUpdate();
+        if (updated > 0) {
+            System.out.println("Premium activated for: " + email.trim());
+            return ResponseEntity.ok("Premium activated");
+        } else {
+            return ResponseEntity.status(404).body("User not found");
+        }
+    } catch (Exception e) {
+        e.printStackTrace();
+        return ResponseEntity.status(500).body("Activation failed");
+    }
+}
 
     @GetMapping("/me")
     public ResponseEntity<Map<String, Object>> getMe(@RequestParam("email") String email) {
@@ -638,4 +638,23 @@ public class GeocodeController {
             return ResponseEntity.status(500).body(Map.of("message", "Batch load failed"));
         }
     }
+    @GetMapping("/activate-premium")
+public String activatePremium(@RequestParam("email") String email) {
+    if (email == null || email.trim().isEmpty()) {
+        return "Missing email";
+    }
+    try (Connection conn = dataSource.getConnection()) {
+        PreparedStatement stmt = conn.prepareStatement("UPDATE users SET subscription_status = 'premium' WHERE email = ?");
+        stmt.setString(1, email.trim());
+        int updated = stmt.executeUpdate();
+        if (updated > 0) {
+            return "Premium activated for " + email;
+        } else {
+            return "User not found";
+        }
+    } catch (Exception e) {
+        e.printStackTrace();
+        return "Activation failed";
+    }
+}
 }

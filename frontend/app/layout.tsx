@@ -1,21 +1,24 @@
-import type { Metadata } from "next";
-import { GeistSans } from "geist/font/sans";  // Sans font
-import { GeistMono } from "geist/font/mono";  // Mono font (separate module)
-import "./globals.css";
+import type { Metadata } from 'next';
+import { Inter } from 'next/font/google';
+import './globals.css';
+import ClientHeader from './ClientHeader';  // New client component for header
+
+const inter = Inter({ subsets: ['latin'] });
 
 export const metadata: Metadata = {
-  title: "Smartgecode – Fast Geocoding for Businesses",
-  description: "Transform addresses into lat/lng coordinates. Free trial, premium batch processing for $29/mo. Save time on location data.",
+  title: 'Smartgeocode',
+  description: 'Geocode app',
 };
 
 export default function RootLayout({
   children,
-}: Readonly<{
+}: {
   children: React.ReactNode;
-}>) {
+}) {
   return (
     <html lang="en">
-      <body className={`${GeistSans.variable} ${GeistMono.variable} antialiased bg-white text-gray-900`}>
+      <body className={inter.className}>
+        <ClientHeader />
         {children}
       </body>
     </html>

@@ -524,35 +524,41 @@ public class GeocodeController {
         rowMap.put(header, line.length > i ? line[i].trim() : "");
     }
 
-// Build optimized query for Nominatim (location bias first, keep under 100 chars)
+// Optimized query: address first (better match), location as bias
 StringBuilder query = new StringBuilder();
-String country = rowMap.get("country");
-if (country != null && !country.isEmpty()) query.append(country).append(", ");
-String state = rowMap.get("state");
-if (state != null && !state.isEmpty()) query.append(state).append(", ");
-String city = rowMap.get("city");
-if (city != null && !city.isEmpty()) query.append(city).append(", ");
 String address = rowMap.get("address");
 if (address != null && !address.isEmpty() && !address.equalsIgnoreCase("N/A")) {
     query.append(address);
 }
 String name = rowMap.get("name");
 if (name != null && !name.isEmpty()) query.append(", ").append(name);
+String city = rowMap.get("city");
+if (city != null && !city.isEmpty()) query.append(", ").append(city);
+String state = rowMap.get("state");
+if (state != null && !state.isEmpty()) query.append(", ").append(state);
+String zip = rowMap.get("zip");
+if (zip != null && !zip.isEmpty()) query.append(", ").append(zip);
+String country = rowMap.get("country");
+if (country != null && !country.isEmpty()) query.append(", ").append(country);
 
 String finalQuery = query.toString().replaceAll(", $", "").trim();
-if (finalQuery.length() > 100) {
-    finalQuery = finalQuery.substring(0, 100); // Truncate to avoid rejection
+if (finalQuery.length() > 80) {
+    finalQuery = finalQuery.substring(0, 80); // Truncate to avoid rejection
 }
 if (finalQuery.isEmpty() || finalQuery.equalsIgnoreCase("N/A")) {
     rowMap.put("status", "skipped");
     rowMap.put("message", "Blank or N/A address");
 } else {
-    // Add country bias parameter
-    String countryCode = (country != null && country.equalsIgnoreCase("USA")) ? "us" : 
-                         (country != null && country.equalsIgnoreCase("India")) ? "in" : "";
+    // Add country bias
+    String countryCode = "";
+    if (country != null) {
+        if (country.equalsIgnoreCase("USA")) countryCode = "us";
+        else if (country.equalsIgnoreCase("India")) countryCode = "in";
+    }
     if (!countryCode.isEmpty()) {
         finalQuery += "&countrycodes=" + countryCode;
     }
+    System.out.println("Sending query to Nominatim: " + finalQuery); // Debug
     Map<String, Object> geo = geocode(finalQuery, null);
     if ("success".equals(geo.get("status"))) {
         rowMap.put("lat", (String) geo.get("lat"));

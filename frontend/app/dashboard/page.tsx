@@ -48,41 +48,52 @@ export default function Dashboard() {
     }
   };
 
-  const handleBatchUpload = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!file || !email) return;
+const handleBatchUpload = async (e: React.FormEvent) => {
+  e.preventDefault();
+  if (!file || !email) return;
 
-    setLoading(true);
-    setError('');
-    setCurrentBatch(null); // Force clear old data
+  setLoading(true);
+  setError('');
+  setCurrentBatch(null);
 
-    const formData = new FormData();
-    formData.append('file', file);
-    formData.append('email', email);
+  const formData = new FormData();
+  formData.append('file', file);
+  formData.append('email', email);
 
-    try {
-      const res = await fetch('/api/batch-geocode', {
-        method: 'POST',
-        body: formData,
-        cache: 'no-store', // Prevent caching stale responses
-      });
-      const data = await res.json();
-      console.log('RAW BATCH RESPONSE FROM BACKEND:', JSON.stringify(data, null, 2)); // Debug log
+  try {
+    const res = await fetch('/api/batch-geocode', {
+      method: 'POST',
+      body: formData,
+      cache: 'no-store',
+      headers: {
+        'Cache-Control': 'no-cache, no-store, must-revalidate',
+      },
+    });
 
-      if (res.ok && data.status === 'success' && Array.isArray(data.preview)) {
-        setCurrentBatch(data);
-        loadBatches(email);
-      } else {
-        setError(data.message || 'Upload failed - check console for details');
-      }
-    } catch (err) {
-      setError('Upload failed—check connection');
-      console.error('Upload error:', err);
-    } finally {
-      setLoading(false);
+    if (!res.ok) {
+      const errData = await res.json();
+      throw new Error(errData.message || `HTTP error: ${res.status}`);
     }
-  };
 
+    const data = await res.json();
+    console.log('FULL RAW BATCH RESPONSE:', JSON.stringify(data, null, 2));
+
+    if (data.status === 'success' && Array.isArray(data.preview)) {
+      setCurrentBatch(data);
+      loadBatches(email);
+    } else {
+      setError(data.message || 'Batch processing failed - check console');
+    }
+  } catch (err: unknown) {
+    const errorMessage = err instanceof Error ? err.message : 'Unknown error';
+    setError('Upload failed: ' + errorMessage);
+    console.error('Upload error:', err);
+    const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement;
+    if (fileInput) fileInput.value = '';
+  } finally {
+    setLoading(false);
+  }
+};
   const downloadBatch = (id: number) => {
     window.open(`/api/batch/${id}?download=true&email=${encodeURIComponent(email)}`);
   };

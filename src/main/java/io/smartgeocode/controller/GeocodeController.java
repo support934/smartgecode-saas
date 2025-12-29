@@ -536,44 +536,44 @@ public class GeocodeController {
 
                     // Build clean, natural query from available fields only (mimics single lookup)
                     // Prioritize name (landmark) first, then address, then location (best for landmarks)
-// Prioritize landmark name first (strongest match), then address, then location bias
+// Clean, natural query from available fields (no forced bias)
 StringBuilder query = new StringBuilder();
 
-// Name first (e.g., "Empire State Building")
-String name = rowMap.get("name");
-if (name != null && !name.isEmpty()) {
-    query.append(name.trim());
-}
-
-// Address (if present, append)
+// Address first (most specific)
 String address = rowMap.get("address");
 if (address != null && !address.isEmpty() && !address.equalsIgnoreCase("N/A")) {
-    if (query.length() > 0) query.append(", ");
     query.append(address.trim());
 }
 
-// City (bias)
+// Name (append if present)
+String name = rowMap.get("name");
+if (name != null && !name.isEmpty()) {
+    if (query.length() > 0) query.append(", ");
+    query.append(name.trim());
+}
+
+// City (if present)
 String city = rowMap.get("city");
 if (city != null && !city.isEmpty()) {
     if (query.length() > 0) query.append(", ");
     query.append(city.trim());
 }
 
-// State (bias)
+// State/Province
 String state = rowMap.get("state");
 if (state != null && !state.isEmpty()) {
     if (query.length() > 0) query.append(", ");
     query.append(state.trim());
 }
 
-// Zip (bias)
+// Zip/Postal
 String zip = rowMap.get("zip");
 if (zip != null && !zip.isEmpty()) {
     if (query.length() > 0) query.append(", ");
     query.append(zip.trim());
 }
 
-// Country (bias + countrycodes)
+// Country last (only if provided)
 String country = rowMap.get("country");
 if (country != null && !country.isEmpty()) {
     if (query.length() > 0) query.append(", ");
@@ -585,25 +585,10 @@ if (finalQuery.isEmpty()) {
     rowMap.put("status", "skipped");
     rowMap.put("message", "Blank or N/A address");
 } else {
-    // Truncate to safe length
+    // Truncate to safe length (Nominatim can reject very long queries)
     if (finalQuery.length() > 80) {
         finalQuery = finalQuery.substring(0, 80);
     }
-
-    // Add country bias if present
-    String countryCode = null;
-    if (country != null) {
-        String lower = country.toLowerCase();
-        if (lower.contains("united states") || lower.contains("usa") || lower.contains("u.s.")) countryCode = "us";
-        else if (lower.contains("india")) countryCode = "in";
-        // Add more as needed (Canada = "ca", UK = "gb", etc.)
-    }
-    if (countryCode != null) {
-        finalQuery += "&countrycodes=" + countryCode;
-    }
-
-    // Add extra params for better details
-    finalQuery += "&limit=1&addressdetails=1&namedetails=1";
 
     System.out.println("Sending query to Nominatim: " + finalQuery);
 
@@ -614,13 +599,8 @@ if (finalQuery.isEmpty()) {
         rowMap.put("formatted_address", (String) geo.get("formatted_address"));
         rowMap.put("status", "success");
     } else {
-        // Fallback: name + address + country only (short & strong)
-        String fallback = "";
-        if (name != null && !name.isEmpty()) fallback = name.trim();
-        if (address != null && !address.isEmpty()) {
-            if (!fallback.isEmpty()) fallback += ", ";
-            fallback += address.trim();
-        }
+        // Fallback: address + country only (most reliable short form)
+        String fallback = address;
         if (country != null && !country.isEmpty()) {
             if (!fallback.isEmpty()) fallback += ", ";
             fallback += country.trim();

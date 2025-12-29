@@ -80,7 +80,9 @@ public class GeocodeController {
 
     @PostConstruct
     public void initDatabase() {
+        System.out.println("initDatabase() started - attempting DB connection");
         try (Connection conn = dataSource.getConnection()) {
+            System.out.println("DB connection successful: " + conn.getMetaData().getURL());
             String sqlUsers = "CREATE TABLE IF NOT EXISTS users (" +
                               "id SERIAL PRIMARY KEY, " +
                               "email VARCHAR(255) UNIQUE NOT NULL, " +
@@ -97,8 +99,10 @@ public class GeocodeController {
                                 ")";
             PreparedStatement stmt1 = conn.prepareStatement(sqlUsers);
             stmt1.execute();
+            System.out.println("Users table created/ensured");
             PreparedStatement stmt2 = conn.prepareStatement(sqlBatches);
             stmt2.execute();
+            System.out.println("Batches table created/ensured");
             System.out.println("DB tables 'users' and 'batches' ensured on startup");
         } catch (Exception e) {
             System.err.println("DB init failed on startup: " + e.getMessage());
@@ -429,28 +433,28 @@ public class GeocodeController {
         }
     }
 
-   @PostMapping("/set-premium")
-public ResponseEntity<String> setPremium(@RequestBody PremiumRequest request) {
-    System.out.println("set-premium called with: " + request);  // Debug
-    String email = request.getEmail();
-    if (email == null || email.trim().isEmpty()) {
-        return ResponseEntity.badRequest().body("Missing email");
-    }
-    try (Connection conn = dataSource.getConnection()) {
-        PreparedStatement stmt = conn.prepareStatement("UPDATE users SET subscription_status = 'premium' WHERE email = ?");
-        stmt.setString(1, email.trim());
-        int updated = stmt.executeUpdate();
-        if (updated > 0) {
-            System.out.println("Premium activated for: " + email.trim());
-            return ResponseEntity.ok("Premium activated");
-        } else {
-            return ResponseEntity.status(404).body("User not found");
+    @PostMapping("/set-premium")
+    public ResponseEntity<String> setPremium(@RequestBody PremiumRequest request) {
+        System.out.println("set-premium called with: " + request);
+        String email = request.getEmail();
+        if (email == null || email.trim().isEmpty()) {
+            return ResponseEntity.badRequest().body("Missing email");
         }
-    } catch (Exception e) {
-        e.printStackTrace();
-        return ResponseEntity.status(500).body("Activation failed");
+        try (Connection conn = dataSource.getConnection()) {
+            PreparedStatement stmt = conn.prepareStatement("UPDATE users SET subscription_status = 'premium' WHERE email = ?");
+            stmt.setString(1, email.trim());
+            int updated = stmt.executeUpdate();
+            if (updated > 0) {
+                System.out.println("Premium activated for: " + email.trim());
+                return ResponseEntity.ok("Premium activated");
+            } else {
+                return ResponseEntity.status(404).body("User not found");
+            }
+        } catch (Exception e) {
+            e.printStackTrace();
+            return ResponseEntity.status(500).body("Activation failed");
+        }
     }
-}
 
     @GetMapping("/me")
     public ResponseEntity<Map<String, Object>> getMe(@RequestParam("email") String email) {
@@ -513,48 +517,48 @@ public ResponseEntity<String> setPremium(@RequestBody PremiumRequest request) {
                 }
 
                 String[] line;
-while ((line = csvReader.readNext()) != null) {
-    Map<String, String> rowMap = new HashMap<>();
-    for (int i = 0; i < headers.length; i++) {
-        String header = headers[i].toLowerCase();
-        rowMap.put(header, line.length > i ? line[i].trim() : "");
-    }
+                while ((line = csvReader.readNext()) != null) {
+                    Map<String, String> rowMap = new HashMap<>();
+                    for (int i = 0; i < headers.length; i++) {
+                        String header = headers[i].toLowerCase();
+                        rowMap.put(header, line.length > i ? line[i].trim() : "");
+                    }
 
-    // Smart query: prioritize location + address (same as single lookup)
-    StringBuilder query = new StringBuilder();
-    String city = rowMap.get("city");
-    if (city != null && !city.isEmpty()) query.append(city).append(", ");
-    String state = rowMap.get("state");
-    if (state != null && !state.isEmpty()) query.append(state).append(", ");
-    String country = rowMap.get("country");
-    if (country != null && !country.isEmpty()) query.append(country).append(", ");
-    String zip = rowMap.get("zip");
-    if (zip != null && !zip.isEmpty()) query.append(zip).append(", ");
-    String address = rowMap.get("address");
-    if (address != null && !address.isEmpty() && !address.equalsIgnoreCase("N/A")) {
-        query.append(address);
-    }
-    String name = rowMap.get("name");
-    if (name != null && !name.isEmpty()) query.append(", ").append(name);
+                    // Build smart query (same as single lookup)
+                    StringBuilder query = new StringBuilder();
+                    String city = rowMap.get("city");
+                    if (city != null && !city.isEmpty()) query.append(city).append(", ");
+                    String state = rowMap.get("state");
+                    if (state != null && !state.isEmpty()) query.append(state).append(", ");
+                    String country = rowMap.get("country");
+                    if (country != null && !country.isEmpty()) query.append(country).append(", ");
+                    String zip = rowMap.get("zip");
+                    if (zip != null && !zip.isEmpty()) query.append(zip).append(", ");
+                    String address = rowMap.get("address");
+                    if (address != null && !address.isEmpty() && !address.equalsIgnoreCase("N/A")) {
+                        query.append(address);
+                    }
+                    String name = rowMap.get("name");
+                    if (name != null && !name.isEmpty()) query.append(", ").append(name);
 
-    String finalQuery = query.toString().replaceAll(", $", "").trim();
-    if (finalQuery.isEmpty() || finalQuery.equalsIgnoreCase("N/A")) {
-        rowMap.put("status", "skipped");
-        rowMap.put("message", "Blank or N/A address");
-    } else {
-        Map<String, Object> geo = geocode(finalQuery, null);  // Reuse single lookup
-        if (geo.get("status").equals("success")) {
-            rowMap.put("lat", (String) geo.get("lat"));
-            rowMap.put("lng", (String) geo.get("lng"));
-            rowMap.put("formatted_address", (String) geo.get("formatted_address"));
-            rowMap.put("status", "success");
-        } else {
-            rowMap.put("status", "error");
-            rowMap.put("message", (String) geo.get("message"));
-        }
-    }
-    fullResults.add(rowMap);
-}
+                    String finalQuery = query.toString().replaceAll(", $", "").trim();
+                    if (finalQuery.isEmpty() || finalQuery.equalsIgnoreCase("N/A")) {
+                        rowMap.put("status", "skipped");
+                        rowMap.put("message", "Blank or N/A address");
+                    } else {
+                        Map<String, Object> geo = geocode(finalQuery, null);  // Reuse single lookup
+                        if ("success".equals(geo.get("status"))) {
+                            rowMap.put("lat", (String) geo.get("lat"));
+                            rowMap.put("lng", (String) geo.get("lng"));
+                            rowMap.put("formatted_address", (String) geo.get("formatted_address"));
+                            rowMap.put("status", "success");
+                        } else {
+                            rowMap.put("status", "error");
+                            rowMap.put("message", (String) geo.get("message"));
+                        }
+                    }
+                    fullResults.add(rowMap);
+                }
             }
 
             StringBuilder csvResults = new StringBuilder();
@@ -635,32 +639,34 @@ while ((line = csvReader.readNext()) != null) {
             return ResponseEntity.status(500).body(Map.of("message", "Batch load failed"));
         }
     }
+
     @GetMapping("/activate-premium")
-public String activatePremium(@RequestParam("email") String email) {
-    if (email == null || email.trim().isEmpty()) {
-        return "Missing email";
-    }
-    try (Connection conn = dataSource.getConnection()) {
-        PreparedStatement stmt = conn.prepareStatement("UPDATE users SET subscription_status = 'premium' WHERE email = ?");
-        stmt.setString(1, email.trim());
-        int updated = stmt.executeUpdate();
-        if (updated > 0) {
-            return "Premium activated for " + email;
-        } else {
-            return "User not found";
+    public String activatePremium(@RequestParam("email") String email) {
+        if (email == null || email.trim().isEmpty()) {
+            return "Missing email";
         }
-    } catch (Exception e) {
-        e.printStackTrace();
-        return "Activation failed";
+        try (Connection conn = dataSource.getConnection()) {
+            PreparedStatement stmt = conn.prepareStatement("UPDATE users SET subscription_status = 'premium' WHERE email = ?");
+            stmt.setString(1, email.trim());
+            int updated = stmt.executeUpdate();
+            if (updated > 0) {
+                return "Premium activated for " + email;
+            } else {
+                return "User not found";
+            }
+        } catch (Exception e) {
+            e.printStackTrace();
+            return "Activation failed";
+        }
     }
-}
-@GetMapping("/test-db")
-public String testDbConnection() {
-    try (Connection conn = dataSource.getConnection()) {
-        return "Connection successful: " + conn.getMetaData().getURL();
-    } catch (Exception e) {
-        e.printStackTrace();
-        return "Connection failed: " + e.getMessage();
+
+    @GetMapping("/test-db")
+    public String testDbConnection() {
+        try (Connection conn = dataSource.getConnection()) {
+            return "Connection successful: " + conn.getMetaData().getURL();
+        } catch (Exception e) {
+            e.printStackTrace();
+            return "Connection failed: " + e.getMessage();
+        }
     }
-}
 }

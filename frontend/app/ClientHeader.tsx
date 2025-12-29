@@ -18,7 +18,7 @@ export default function ClientHeader() {
   return (
     <header className="bg-red-600 text-white p-4 shadow-lg">
       <div className="max-w-6xl mx-auto flex justify-between items-center">
-        <h1 className="text-2xl font-bold">Smartgecode</h1>
+        <h1 className="text-2xl font-bold">Smartgeocode</h1>
         <div className="space-x-4">
           {isLoggedIn ? (
             <span>Welcome, {email}!</span>

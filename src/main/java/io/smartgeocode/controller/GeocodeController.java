@@ -536,44 +536,44 @@ public class GeocodeController {
 
                     // Build clean, natural query from available fields only (mimics single lookup)
                     // Prioritize name (landmark) first, then address, then location (best for landmarks)
-// Clean, natural query from available fields (no forced bias)
+// Prioritize landmark/business name first (strongest for famous places), then address, then location
 StringBuilder query = new StringBuilder();
 
-// Address first (most specific)
-String address = rowMap.get("address");
-if (address != null && !address.isEmpty() && !address.equalsIgnoreCase("N/A")) {
-    query.append(address.trim());
-}
-
-// Name (append if present)
+// Name first (e.g., "White House", "Empire State Building")
 String name = rowMap.get("name");
 if (name != null && !name.isEmpty()) {
-    if (query.length() > 0) query.append(", ");
     query.append(name.trim());
 }
 
-// City (if present)
+// Address (append if present)
+String address = rowMap.get("address");
+if (address != null && !address.isEmpty() && !address.equalsIgnoreCase("N/A")) {
+    if (query.length() > 0) query.append(", ");
+    query.append(address.trim());
+}
+
+// City (bias)
 String city = rowMap.get("city");
 if (city != null && !city.isEmpty()) {
     if (query.length() > 0) query.append(", ");
     query.append(city.trim());
 }
 
-// State/Province
+// State (bias)
 String state = rowMap.get("state");
 if (state != null && !state.isEmpty()) {
     if (query.length() > 0) query.append(", ");
     query.append(state.trim());
 }
 
-// Zip/Postal
+// Zip (bias)
 String zip = rowMap.get("zip");
 if (zip != null && !zip.isEmpty()) {
     if (query.length() > 0) query.append(", ");
     query.append(zip.trim());
 }
 
-// Country last (only if provided)
+// Country (bias)
 String country = rowMap.get("country");
 if (country != null && !country.isEmpty()) {
     if (query.length() > 0) query.append(", ");
@@ -585,10 +585,13 @@ if (finalQuery.isEmpty()) {
     rowMap.put("status", "skipped");
     rowMap.put("message", "Blank or N/A address");
 } else {
-    // Truncate to safe length (Nominatim can reject very long queries)
+    // Truncate to safe length
     if (finalQuery.length() > 80) {
         finalQuery = finalQuery.substring(0, 80);
     }
+
+    // Add extra Nominatim params for better landmark matching
+    finalQuery += "&limit=1&addressdetails=1&namedetails=1&featuretype=settlement";  // Prefer cities/landmarks
 
     System.out.println("Sending query to Nominatim: " + finalQuery);
 
@@ -599,8 +602,9 @@ if (finalQuery.isEmpty()) {
         rowMap.put("formatted_address", (String) geo.get("formatted_address"));
         rowMap.put("status", "success");
     } else {
-        // Fallback: address + country only (most reliable short form)
-        String fallback = address;
+        // Fallback: name + country only (very strong for landmarks)
+        String fallback = "";
+        if (name != null && !name.isEmpty()) fallback = name.trim();
         if (country != null && !country.isEmpty()) {
             if (!fallback.isEmpty()) fallback += ", ";
             fallback += country.trim();

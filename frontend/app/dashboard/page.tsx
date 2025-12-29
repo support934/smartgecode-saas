@@ -87,18 +87,27 @@ export default function Dashboard() {
     window.open(`/api/batch/${id}?download=true&email=${encodeURIComponent(email)}`);
   };
 
-  const downloadSample = () => {
-    const csv = "address,name,city,state,zip,country\n" +
-                "1600 Pennsylvania Ave NW,White House,Washington DC,,20500,USA\n" +
-                "Chennai,,Tamil Nadu,,,India\n" +
-                "1251 Avenue of the Americas,,New York,NY,10020,USA\n";
-    const blob = new Blob([csv], { type: 'text/csv' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = 'sample-addresses.csv';
-    a.click();
-  };
+const downloadSample = () => {
+  const csv = `# Smartgeocode Batch Sample CSV - Instructions:\n` +
+              `# Required: 'address' column (street or place name)\n` +
+              `# Optional but recommended: 'city', 'state', 'zip', 'country' (improves accuracy a lot!)\n` +
+              `# 'name' is optional (e.g., business or landmark name)\n` +
+              `# Blank or "N/A" rows are skipped automatically\n` +
+              `# Save as .csv and upload below\n\n` +
+              `address,name,city,state,zip,country\n` +
+              `1600 Pennsylvania Ave NW,White House,Washington DC,,20500,USA\n` +
+              `Chennai,,Tamil Nadu,,,India\n` +
+              `1251 Avenue of the Americas,,New York,NY,10020,USA\n` +
+              `Ahmedabad,,Gujarat,,,India\n` +
+              `350 Fifth Avenue,Empire State Building,New York,NY,10118,USA\n` +
+              `Tokyo Tower,,Minato City,Tokyo,,Japan\n`;
+  const blob = new Blob([csv], { type: 'text/csv' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'sample-addresses.csv';
+  a.click();
+};
 
   const handleSingleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -414,10 +423,10 @@ export default function Dashboard() {
                 ×
               </button>
               <h3 className="text-3xl font-bold mb-8 text-red-700 text-center">CSV Format Help</h3>
-              <p className="mb-4 text-lg"><strong>Required:</strong> <span className="font-bold">address</span> column.</p>
-              <p className="mb-4 text-lg"><strong>Optional:</strong> name, city, state, zip, country (strongly recommended for best accuracy).</p>
-              <p className="mb-6 text-lg">Blank or "N/A" rows will be skipped automatically.</p>
-              <p className="font-bold text-xl mt-8 mb-4 text-gray-800">Example Format:</p>
+              <p className="mb-4 text-lg"><strong>Required:</strong> <span className="font-bold">address</span> column (street, place, or landmark name).</p>
+              <p className="mb-4 text-lg"><strong>Optional but highly recommended:</strong> name, city, state, zip, country — these dramatically improve accuracy, especially for international addresses.</p>
+              <p className="mb-6 text-lg">Blank or "N/A" rows are automatically skipped.</p>
+              <p className="font-bold text-xl mt-8 mb-4 text-gray-800">Example (copy-paste into Excel/Google Sheets):</p>
               <pre className="bg-gray-50 p-6 rounded-2xl overflow-x-auto text-sm font-mono border border-gray-200 whitespace-pre-wrap">
 {`address,name,city,state,zip,country
 1600 Pennsylvania Ave NW,White House,Washington DC,,20500,USA

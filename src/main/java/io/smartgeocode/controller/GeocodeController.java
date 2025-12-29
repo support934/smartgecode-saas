@@ -513,53 +513,52 @@ public ResponseEntity<String> setPremium(@RequestBody PremiumRequest request) {
                 }
 
                 String[] line;
-                while ((line = csvReader.readNext()) != null) {
-                // Inside try (CSVReader csvReader = ... ) { ... while ((line = csvReader.readNext()) != null) { ... } }
-Map<String, String> rowMap = new HashMap<>();
-for (int i = 0; i < headers.length; i++) {
-    String header = headers[i].toLowerCase();
-    rowMap.put(header, line.length > i ? line[i].trim() : "");
-}
-
-// Build smart query (same as single lookup)
-StringBuilder query = new StringBuilder();
-String address = rowMap.get("address");
-if (address != null && !address.isEmpty() && !address.equalsIgnoreCase("N/A")) {
-    query.append(address);
-}
-String name = rowMap.get("name");
-if (name != null && !name.isEmpty()) query.append(", ").append(name);
-String city = rowMap.get("city");
-if (city != null && !city.isEmpty()) query.append(", ").append(city);
-String state = rowMap.get("state");
-if (state != null && !state.isEmpty()) query.append(", ").append(state);
-String zip = rowMap.get("zip");
-if (zip != null && !zip.isEmpty()) query.append(", ").append(zip);
-String country = rowMap.get("country");
-if (country != null && !country.isEmpty()) {
-    query.append(", ").append(country);
-} else if (zip != null && zip.matches("\\d{5}(-\\d{4})?")) {
-    query.append(", USA");
-}
-
-String finalQuery = query.toString().trim();
-if (finalQuery.isEmpty() || finalQuery.equalsIgnoreCase("N/A")) {
-    rowMap.put("status", "skipped");
-    rowMap.put("message", "Blank or N/A address");
-} else {
-    Map<String, Object> geo = geocode(finalQuery, null);  // Reuse single lookup logic
-    if (geo.get("status").equals("success")) {
-        rowMap.put("lat", (String) geo.get("lat"));
-        rowMap.put("lng", (String) geo.get("lng"));
-        rowMap.put("formatted_address", (String) geo.get("formatted_address"));
-        rowMap.put("status", "success");
-    } else {
-        rowMap.put("status", "error");
-        rowMap.put("message", (String) geo.get("message"));
+while ((line = csvReader.readNext()) != null) {
+    Map<String, String> rowMap = new HashMap<>();
+    for (int i = 0; i < headers.length; i++) {
+        String header = headers[i].toLowerCase();
+        rowMap.put(header, line.length > i ? line[i].trim() : "");
     }
+
+    // Build smart query (same as single /geocode logic)
+    StringBuilder query = new StringBuilder();
+    String address = rowMap.get("address");
+    if (address != null && !address.isEmpty() && !address.equalsIgnoreCase("N/A")) {
+        query.append(address);
+    }
+    String name = rowMap.get("name");
+    if (name != null && !name.isEmpty()) query.append(", ").append(name);
+    String city = rowMap.get("city");
+    if (city != null && !city.isEmpty()) query.append(", ").append(city);
+    String state = rowMap.get("state");
+    if (state != null && !state.isEmpty()) query.append(", ").append(state);
+    String zip = rowMap.get("zip");
+    if (zip != null && !zip.isEmpty()) query.append(", ").append(zip);
+    String country = rowMap.get("country");
+    if (country != null && !country.isEmpty()) {
+        query.append(", ").append(country);
+    } else if (zip != null && zip.matches("\\d{5}(-\\d{4})?")) {
+        query.append(", USA");
+    }
+
+    String finalQuery = query.toString().trim();
+    if (finalQuery.isEmpty() || finalQuery.equalsIgnoreCase("N/A")) {
+        rowMap.put("status", "skipped");
+        rowMap.put("message", "Blank or N/A address");
+    } else {
+        Map<String, Object> geo = geocode(finalQuery, null);  // Reuse single lookup method
+        if (geo.get("status").equals("success")) {
+            rowMap.put("lat", (String) geo.get("lat"));
+            rowMap.put("lng", (String) geo.get("lng"));
+            rowMap.put("formatted_address", (String) geo.get("formatted_address"));
+            rowMap.put("status", "success");
+        } else {
+            rowMap.put("status", "error");
+            rowMap.put("message", (String) geo.get("message"));
+        }
+    }
+    fullResults.add(rowMap);
 }
-fullResults.add(rowMap);
-                }
             }
 
             StringBuilder csvResults = new StringBuilder();

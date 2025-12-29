@@ -517,55 +517,67 @@ public class GeocodeController {
                 }
 
                 String[] line;
-                while ((line = csvReader.readNext()) != null) {
-    // Inside while ((line = csvReader.readNext()) != null) { ... }
-Map<String, String> rowMap = new HashMap<>();
-for (int i = 0; i < headers.length; i++) {
-    String header = headers[i].toLowerCase();
-    rowMap.put(header, line.length > i ? line[i].trim() : "");
-}
+                    while ((line = csvReader.readNext()) != null) {
+                Map<String, String> rowMap = new HashMap<>();
+                for (int i = 0; i < headers.length; i++) {
+                    String header = headers[i].toLowerCase();
+                    rowMap.put(header, line.length > i ? line[i].trim() : "");
+                }
 
-// Simplified query: address + country (mimics single lookup)
-String finalQuery = "";
-String address = rowMap.get("address");
-if (address != null && !address.isEmpty() && !address.equalsIgnoreCase("N/A")) {
-    finalQuery = address;
-}
-String country = rowMap.get("country");
-if (country != null && !country.isEmpty()) {
-    finalQuery += ", " + country;
-}
+                // Minimal, single-lookup-like query: address + country (short & precise)
+                String finalQuery = "";
+                String address = rowMap.get("address");
+                if (address != null && !address.isEmpty() && !address.equalsIgnoreCase("N/A")) {
+                    finalQuery = address.trim();
+                }
+                String country = rowMap.get("country");
+                if (country != null && !country.isEmpty()) {
+                    finalQuery += ", " + country.trim();
+                }
 
-finalQuery = finalQuery.trim();
-if (finalQuery.isEmpty()) {
-    rowMap.put("status", "skipped");
-    rowMap.put("message", "Blank or N/A address");
-} else {
-    // Add strong country bias (2-letter code)
-    String countryCode = "";
-    if (country != null) {
-        if (country.equalsIgnoreCase("USA") || country.equalsIgnoreCase("United States")) countryCode = "us";
-        else if (country.equalsIgnoreCase("India")) countryCode = "in";
-        // Add more countries as needed
-    }
-    if (!countryCode.isEmpty()) {
-        finalQuery += "&countrycodes=" + countryCode;
-    }
-    System.out.println("Sending simplified query to Nominatim: " + finalQuery);
+                // Add city/state if present (optional bias)
+                String city = rowMap.get("city");
+                if (city != null && !city.isEmpty()) {
+                    finalQuery = city.trim() + ", " + finalQuery;
+                }
+                String state = rowMap.get("state");
+                if (state != null && !state.isEmpty()) {
+                    finalQuery = state.trim() + ", " + finalQuery;
+                }
 
-    Map<String, Object> geo = geocode(finalQuery, null);
-    if ("success".equals(geo.get("status"))) {
-        rowMap.put("lat", (String) geo.get("lat"));
-        rowMap.put("lng", (String) geo.get("lng"));
-        rowMap.put("formatted_address", (String) geo.get("formatted_address"));
-        rowMap.put("status", "success");
-    } else {
-        rowMap.put("status", "error");
-        rowMap.put("message", (String) geo.get("message"));
-    }
-}
-fullResults.add(rowMap);
-}
+                finalQuery = finalQuery.trim();
+                if (finalQuery.isEmpty()) {
+                    rowMap.put("status", "skipped");
+                    rowMap.put("message", "Blank or N/A address");
+                } else {
+                    // Strong country bias (2-letter code)
+                    String countryCode = "";
+                    if (country != null) {
+                        if (country.equalsIgnoreCase("USA") || country.equalsIgnoreCase("United States") || country.equalsIgnoreCase("United States of America")) {
+                            countryCode = "us";
+                        } else if (country.equalsIgnoreCase("India")) {
+                            countryCode = "in";
+                        }
+                        // Add more countries as needed
+                    }
+                    if (!countryCode.isEmpty()) {
+                        finalQuery += "&countrycodes=" + countryCode;
+                    }
+
+                    System.out.println("Sending query to Nominatim: " + finalQuery);
+                    Map<String, Object> geo = geocode(finalQuery, null);
+                    if ("success".equals(geo.get("status"))) {
+                        rowMap.put("lat", (String) geo.get("lat"));
+                        rowMap.put("lng", (String) geo.get("lng"));
+                        rowMap.put("formatted_address", (String) geo.get("formatted_address"));
+                        rowMap.put("status", "success");
+                    } else {
+                        rowMap.put("status", "error");
+                        rowMap.put("message", (String) geo.get("message"));
+                    }
+                }
+                fullResults.add(rowMap);
+            }
             }
 
             StringBuilder csvResults = new StringBuilder();

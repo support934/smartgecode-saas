@@ -520,33 +520,29 @@ while ((line = csvReader.readNext()) != null) {
         rowMap.put(header, line.length > i ? line[i].trim() : "");
     }
 
-    // Build smart query (same as single /geocode logic)
+    // Smart query: prioritize location + address (same as single lookup)
     StringBuilder query = new StringBuilder();
+    String city = rowMap.get("city");
+    if (city != null && !city.isEmpty()) query.append(city).append(", ");
+    String state = rowMap.get("state");
+    if (state != null && !state.isEmpty()) query.append(state).append(", ");
+    String country = rowMap.get("country");
+    if (country != null && !country.isEmpty()) query.append(country).append(", ");
+    String zip = rowMap.get("zip");
+    if (zip != null && !zip.isEmpty()) query.append(zip).append(", ");
     String address = rowMap.get("address");
     if (address != null && !address.isEmpty() && !address.equalsIgnoreCase("N/A")) {
         query.append(address);
     }
     String name = rowMap.get("name");
     if (name != null && !name.isEmpty()) query.append(", ").append(name);
-    String city = rowMap.get("city");
-    if (city != null && !city.isEmpty()) query.append(", ").append(city);
-    String state = rowMap.get("state");
-    if (state != null && !state.isEmpty()) query.append(", ").append(state);
-    String zip = rowMap.get("zip");
-    if (zip != null && !zip.isEmpty()) query.append(", ").append(zip);
-    String country = rowMap.get("country");
-    if (country != null && !country.isEmpty()) {
-        query.append(", ").append(country);
-    } else if (zip != null && zip.matches("\\d{5}(-\\d{4})?")) {
-        query.append(", USA");
-    }
 
-    String finalQuery = query.toString().trim();
+    String finalQuery = query.toString().replaceAll(", $", "").trim();
     if (finalQuery.isEmpty() || finalQuery.equalsIgnoreCase("N/A")) {
         rowMap.put("status", "skipped");
         rowMap.put("message", "Blank or N/A address");
     } else {
-        Map<String, Object> geo = geocode(finalQuery, null);  // Reuse single lookup method
+        Map<String, Object> geo = geocode(finalQuery, null);  // Reuse single lookup
         if (geo.get("status").equals("success")) {
             rowMap.put("lat", (String) geo.get("lat"));
             rowMap.put("lng", (String) geo.get("lng"));

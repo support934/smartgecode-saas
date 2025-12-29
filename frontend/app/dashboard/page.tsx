@@ -4,7 +4,7 @@ import { useState, useEffect } from 'react';
 
 export default function Dashboard() {
   const [subscription, setSubscription] = useState<'free' | 'premium' | 'loading'>('loading');
-  const [email, setEmail] = useState('');
+  const [email, setEmail] = useState<string>('');
   const [batches, setBatches] = useState<any[]>([]);
   const [file, setFile] = useState<File | null>(null);
   const [loading, setLoading] = useState(false);
@@ -132,18 +132,26 @@ export default function Dashboard() {
     }
   };
 
-  if (subscription === 'loading') return <p className="text-center mt-8">Loading dashboard...</p>;
+  const logout = () => {
+    localStorage.clear();
+    window.location.href = '/';
+  };
+
+  if (subscription === 'loading') return <p className="text-center mt-8 text-xl font-semibold">Loading dashboard...</p>;
 
   if (subscription === 'free') {
-    // Full free single lookup UI (your original)
+    // Full free single lookup UI
     return (
       <div className="min-h-screen bg-white">
         <header className="bg-red-600 text-white p-4 shadow-lg">
           <div className="max-w-6xl mx-auto flex justify-between items-center">
-            <h1 className="text-2xl font-bold">smartgeocode</h1>
+            <h1 className="text-2xl font-bold">Smartgeocode</h1>
             <div className="space-x-4">
               <button onClick={handleUpsell} className="bg-white text-red-600 px-4 py-2 rounded-lg hover:bg-gray-100 font-semibold">
                 Upgrade to Premium ($29/mo)
+              </button>
+              <button onClick={logout} className="bg-white text-red-600 px-4 py-2 rounded-lg hover:bg-gray-100 font-semibold">
+                Log Out
               </button>
             </div>
           </div>
@@ -222,23 +230,34 @@ export default function Dashboard() {
     );
   }
 
-  // Premium batch UI (your full red/white theme)
+  // Premium batch UI (red/white theme)
   return (
     <div className="min-h-screen bg-white">
       <header className="bg-red-600 text-white p-4 shadow-lg">
         <div className="max-w-6xl mx-auto flex justify-between items-center">
           <h1 className="text-2xl font-bold">Smartgeocode Premium Dashboard</h1>
-          <p>Welcome, {email}!</p>
+          <div className="flex items-center space-x-6">
+            <p className="font-medium">Welcome, {email}!</p>
+            <button
+              onClick={() => {
+                localStorage.clear();
+                window.location.href = '/';
+              }}
+              className="bg-white text-red-600 px-5 py-2 rounded-lg font-semibold hover:bg-gray-100 transition"
+            >
+              Log Out
+            </button>
+          </div>
         </div>
       </header>
       <main className="max-w-6xl mx-auto p-8">
         <div className="bg-gray-50 rounded-xl shadow-lg p-8 mb-8">
           <h2 className="text-2xl font-bold text-red-600 mb-4">Upload CSV for Batch Geocoding</h2>
           <div className="mb-4 flex gap-4">
-            <button onClick={downloadSample} className="text-red-600 underline font-semibold">
+            <button onClick={downloadSample} className="text-red-600 underline font-semibold hover:text-red-800">
               Download Sample CSV
             </button>
-            <button onClick={() => setShowHelp(true)} className="text-red-600 underline font-semibold">
+            <button onClick={() => setShowHelp(true)} className="text-red-600 underline font-semibold hover:text-red-800">
               Help / Format Guide
             </button>
           </div>
@@ -248,41 +267,48 @@ export default function Dashboard() {
               accept=".csv"
               onChange={(e) => setFile(e.target.files?.[0] || null)}
               required
-              className="w-full p-3 border border-gray-300 rounded-lg"
+              className="w-full p-3 border border-gray-300 rounded-lg text-gray-700 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-semibold file:bg-red-50 file:text-red-700 hover:file:bg-red-100"
             />
-            <button type="submit" disabled={loading} className="w-full bg-red-600 text-white py-3 rounded-lg font-bold hover:bg-red-700 disabled:opacity-50">
+            <button
+              type="submit"
+              disabled={loading}
+              className="w-full bg-red-600 text-white py-3 rounded-lg font-bold hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
               {loading ? 'Processing...' : 'Process Batch'}
             </button>
           </form>
-          {error && <p className="text-red-600 mt-4 font-semibold">{error}</p>}
+          {error && <p className="text-red-600 mt-4 font-semibold text-center">{error}</p>}
           {currentBatch && currentBatch.status === 'success' && (
-            <div className="mt-8">
+            <div className="mt-10">
               <h3 className="text-xl font-bold mb-4 text-red-600">Preview (first 50 rows)</h3>
-              <div className="overflow-x-auto">
-                <table className="w-full border-collapse border border-gray-300">
-                  <thead className="bg-red-100">
+              <div className="overflow-x-auto rounded-lg border border-gray-200">
+                <table className="w-full border-collapse">
+                  <thead className="bg-red-50">
                     <tr>
-                      <th className="border border-gray-300 p-2">Address</th>
-                      <th className="border border-gray-300 p-2">Lat</th>
-                      <th className="border border-gray-300 p-2">Lng</th>
-                      <th className="border border-gray-300 p-2">Formatted</th>
-                      <th className="border border-gray-300 p-2">Status</th>
+                      <th className="border border-gray-300 p-3 text-left font-semibold text-red-800">Address</th>
+                      <th className="border border-gray-300 p-3 text-left font-semibold text-red-800">Lat</th>
+                      <th className="border border-gray-300 p-3 text-left font-semibold text-red-800">Lng</th>
+                      <th className="border border-gray-300 p-3 text-left font-semibold text-red-800">Formatted</th>
+                      <th className="border border-gray-300 p-3 text-left font-semibold text-red-800">Status</th>
                     </tr>
                   </thead>
                   <tbody>
                     {currentBatch.preview.map((row: any, i: number) => (
-                      <tr key={i} className="hover:bg-gray-50">
-                        <td className="border border-gray-300 p-2">{row.address || ''}</td>
-                        <td className="border border-gray-300 p-2">{row.lat || ''}</td>
-                        <td className="border border-gray-300 p-2">{row.lng || ''}</td>
-                        <td className="border border-gray-300 p-2">{row.formatted_address || ''}</td>
-                        <td className="border border-gray-300 p-2">{row.status || ''}</td>
+                      <tr key={i} className="hover:bg-gray-50 transition">
+                        <td className="border border-gray-300 p-3">{row.address || '-'}</td>
+                        <td className="border border-gray-300 p-3">{row.lat || '-'}</td>
+                        <td className="border border-gray-300 p-3">{row.lng || '-'}</td>
+                        <td className="border border-gray-300 p-3">{row.formatted_address || '-'}</td>
+                        <td className="border border-gray-300 p-3 font-medium text-green-600">{row.status || '-'}</td>
                       </tr>
                     ))}
                   </tbody>
                 </table>
               </div>
-              <button onClick={() => downloadBatch(currentBatch.batchId)} className="mt-6 bg-green-600 text-white py-3 px-6 rounded-lg font-bold hover:bg-green-700">
+              <button
+                onClick={() => downloadBatch(currentBatch.batchId)}
+                className="mt-6 bg-green-600 text-white py-3 px-8 rounded-lg font-bold hover:bg-green-700 transition"
+              >
                 Download Full CSV ({currentBatch.totalRows} rows)
               </button>
             </div>
@@ -294,24 +320,24 @@ export default function Dashboard() {
           {batches.length === 0 ? (
             <p className="text-gray-600">No batches yet—upload your first!</p>
           ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full border-collapse border border-gray-300">
-                <thead className="bg-red-100">
+            <div className="overflow-x-auto rounded-lg border border-gray-200">
+              <table className="w-full border-collapse">
+                <thead className="bg-red-50">
                   <tr>
-                    <th className="border border-gray-300 p-2">ID</th>
-                    <th className="border border-gray-300 p-2">Status</th>
-                    <th className="border border-gray-300 p-2">Created</th>
-                    <th className="border border-gray-300 p-2">Action</th>
+                    <th className="border border-gray-300 p-3 text-left font-semibold text-red-800">ID</th>
+                    <th className="border border-gray-300 p-3 text-left font-semibold text-red-800">Status</th>
+                    <th className="border border-gray-300 p-3 text-left font-semibold text-red-800">Created</th>
+                    <th className="border border-gray-300 p-3 text-left font-semibold text-red-800">Action</th>
                   </tr>
                 </thead>
                 <tbody>
                   {batches.map((b) => (
-                    <tr key={b.id} className="hover:bg-gray-50">
-                      <td className="border border-gray-300 p-2 text-center">{b.id}</td>
-                      <td className="border border-gray-300 p-2 text-center">{b.status}</td>
-                      <td className="border border-gray-300 p-2 text-center">{b.created_at}</td>
-                      <td className="border border-gray-300 p-2 text-center">
-                        <button onClick={() => downloadBatch(b.id)} className="text-red-600 underline font-semibold">
+                    <tr key={b.id} className="hover:bg-gray-50 transition">
+                      <td className="border border-gray-300 p-3">{b.id}</td>
+                      <td className="border border-gray-300 p-3 font-medium text-green-600">{b.status}</td>
+                      <td className="border border-gray-300 p-3">{b.created_at}</td>
+                      <td className="border border-gray-300 p-3">
+                        <button onClick={() => downloadBatch(b.id)} className="text-red-600 underline hover:text-red-800 font-semibold">
                           Download CSV
                         </button>
                       </td>
@@ -324,21 +350,22 @@ export default function Dashboard() {
         </div>
 
         {showHelp && (
-          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-            <div className="bg-white p-8 rounded-lg max-w-lg shadow-2xl">
-              <h3 className="text-xl font-bold mb-4 text-red-600">CSV Format Help</h3>
-              <p>Required: <strong>address</strong> column.</p>
-              <p>Optional: name, city, state, zip, country.</p>
-              <p>Blank or "N/A" skipped.</p>
-              <p className="mt-4 font-semibold">Example:</p>
-              <pre className="bg-gray-100 p-4 rounded mt-2 overflow-x-auto text-sm">
-address,name,city,state,zip,country
+          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+            <div className="bg-white p-8 rounded-xl max-w-2xl w-full shadow-2xl relative">
+              <button onClick={() => setShowHelp(false)} className="absolute top-4 right-4 text-gray-500 hover:text-gray-800 text-2xl">
+                ×
+              </button>
+              <h3 className="text-2xl font-bold mb-6 text-red-600">CSV Format Help</h3>
+              <p className="mb-4"><strong>Required:</strong> <span className="font-semibold">address</span> column.</p>
+              <p className="mb-4"><strong>Optional:</strong> name, city, state, zip, country (highly recommended for accuracy).</p>
+              <p className="mb-4">Blank or "N/A" rows will be skipped.</p>
+              <p className="font-semibold mt-6 mb-2">Example:</p>
+              <pre className="bg-gray-100 p-4 rounded-lg overflow-x-auto text-sm font-mono whitespace-pre-wrap">
+{`address,name,city,state,zip,country
 1600 Pennsylvania Ave NW,White House,Washington DC,,20500,USA
 Chennai,,Tamil Nadu,,,India
+1251 Avenue of the Americas,,New York,NY,10020,USA`}
               </pre>
-              <button onClick={() => setShowHelp(false)} className="mt-6 bg-red-600 text-white px-6 py-3 rounded font-bold hover:bg-red-700">
-                Close
-              </button>
             </div>
           </div>
         )}

@@ -517,22 +517,30 @@ public ResponseEntity<Map<String, Object>> batchGeocode(@RequestParam("file") Mu
 
             // Phase 1: Skip leading comments/empty until header
             while ((line = csvReader.readNext()) != null) {
-                if (line.length == 0 || (line[0] != null && line[0].trim().startsWith("#"))) {
+                if (line.length < 2) {
                     continue;
                 }
-                headers = line;
-                break;
+               String firstCell = line[0] != null ? line[0].trim() : "";
+        if (firstCell.startsWith("#") || firstCell.isEmpty()) {
+            continue;
+        }
+        // This looks like header
+        headers = line;
+        break;
             }
 
-            if (headers == null || headers.length == 0 || !java.util.Arrays.asList(headers).contains("address")) {
+            if (headers == null || headers.length < 1 || !java.util.Arrays.asList(headers).contains("address")) {
+                System.out.println("=== DEBUG: Headers not found or missing 'address': " + (headers != null ? java.util.Arrays.toString(headers) : "null"));
                 response.put("status", "error");
                 response.put("message", "CSV must have 'address' column");
                 return ResponseEntity.badRequest().body(response);
             }
 
+            System.out.println("=== DEBUG: Headers found: " + java.util.Arrays.toString(headers));
+
             // Phase 2: Process data rows
             while ((line = csvReader.readNext()) != null) {
-                if (line.length == 0 || (line[0] != null && line[0].trim().startsWith("#"))) {
+                if (line.length < 1 || (line[0] != null && line[0].trim().startsWith("#"))) {
                     continue;
                 }
 

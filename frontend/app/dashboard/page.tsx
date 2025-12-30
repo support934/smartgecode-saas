@@ -2,6 +2,11 @@
 
 import { useState, useEffect } from 'react';
 import toast, { Toaster } from 'react-hot-toast';
+import { loadStripe } from '@stripe/stripe-js';
+import { Elements } from '@stripe/react-stripe-js';
+
+// Load Stripe promise (only once, outside component)
+const stripePromise = loadStripe(process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY!);
 
 export default function Dashboard() {
   const [subscription, setSubscription] = useState<'free' | 'premium' | 'loading'>('loading');
@@ -49,94 +54,98 @@ export default function Dashboard() {
     }
   };
 
-const handleBatchUpload = async (e: React.FormEvent) => {
-  e.preventDefault();
-  if (!file || !email) return;
+  const handleBatchUpload = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!file || !email) return;
 
-  setLoading(true);
-  setError('');
-  setCurrentBatch(null);
+    setLoading(true);
+    setError('');
+    setCurrentBatch(null);
 
-  const formData = new FormData();
-  formData.append('file', file);
-  formData.append('email', email);
+    const formData = new FormData();
+    formData.append('file', file);
+    formData.append('email', email);
 
-  try {
-    const res = await fetch('/api/batch-geocode', {
-      method: 'POST',
-      body: formData,
-      cache: 'no-store',
-      headers: {
-        'Cache-Control': 'no-cache, no-store, must-revalidate',
-      },
-    });
-
-    if (!res.ok) {
-      const errData = await res.json();
-      throw new Error(errData.message || `HTTP error: ${res.status}`);
-    }
-
-    const data = await res.json();
-    console.log('FULL RAW BATCH RESPONSE:', JSON.stringify(data, null, 2));
-
-    if (data.status === 'success' && Array.isArray(data.preview)) {
-      setCurrentBatch(data);
-      loadBatches(email);
-      // Send email with batch summary
-      await fetch('/api/email', {
+    try {
+      const res = await fetch('/api/batch-geocode', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          email: email,
-          address: `Batch #${data.batchId} - ${data.totalRows} rows`,
-          result: {
-            message: `Batch processed successfully! Total rows: ${data.totalRows}. Download full results from dashboard.`,
-            // Optional: preview summary
-            preview: data.preview.slice(0, 3).map((row: any) => ({
-              address: row.address,
-              status: row.status,
-            })),
-          },
-        }),
+        body: formData,
+        cache: 'no-store',
+        headers: {
+          'Cache-Control': 'no-cache, no-store, must-revalidate',
+        },
       });
-      toast.success('Batch processed successfully! Preview below.'); // or use toast
-    } else {
-      setError(data.message || 'Batch processing failed - check console');
+
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({})); // Fallback if not JSON
+        throw new Error(errData.message || `HTTP error: ${res.status}`);
+      }
+
+      const data = await res.json();
+      console.log('FULL RAW BATCH RESPONSE:', JSON.stringify(data, null, 2));
+
+      if (data.status === 'success' && Array.isArray(data.preview)) {
+        setCurrentBatch(data);
+        loadBatches(email);
+
+        // Send email with batch summary
+        await fetch('/api/email', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            email: email,
+            address: `Batch #${data.batchId} - ${data.totalRows} rows`,
+            result: {
+              message: `Batch processed successfully! Total rows: ${data.totalRows}. Download full results from dashboard.`,
+              preview: data.preview.slice(0, 3).map((row: any) => ({
+                address: row.address,
+                status: row.status,
+              })),
+            },
+          }),
+        });
+
+        toast.success('Batch processed! Results emailed & preview ready.');
+      } else {
+        setError(data.message || 'Batch processing failed - check console');
+        toast.error('Batch failed - check console');
+      }
+    } catch (err: unknown) {
+      const errorMessage = err instanceof Error ? err.message : 'Unknown error';
+      setError('Upload failed: ' + errorMessage);
+      toast.error('Upload failed: ' + errorMessage);
+      console.error('Upload error:', err);
+      const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement;
+      if (fileInput) fileInput.value = '';
+    } finally {
+      setLoading(false);
     }
-  } catch (err: unknown) {
-    const errorMessage = err instanceof Error ? err.message : 'Unknown error';
-    setError('Upload failed: ' + errorMessage);
-    console.error('Upload error:', err);
-    const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement;
-    if (fileInput) fileInput.value = '';
-  } finally {
-    setLoading(false);
-  }
-};
+  };
+
   const downloadBatch = (id: number) => {
     window.open(`/api/batch/${id}?download=true&email=${encodeURIComponent(email)}`);
   };
 
-const downloadSample = () => {
-  const csv = `# Smartgeocode Batch Sample CSV - Instructions:\n` +
-              `# Required: 'address' column (street or place name)\n` +
-              `# Optional but recommended: 'landmark' (e.g. Building name), 'city', 'state', 'zip', 'country' (improves accuracy a lot!)\n` +
-              `# Blank or "N/A" rows are skipped automatically\n` +
-              `# Save as .csv and upload below\n\n` +
-              `address,landmark,city,state,zip,country\n` +
-              `1600 Pennsylvania Ave NW,White House,Washington DC,,20500,USA\n` +
-              `Chennai,,Tamil Nadu,,,India\n` +
-              `1251 Avenue of the Americas,,New York,NY,10020,USA\n` +
-              `Ahmedabad,,Gujarat,,,India\n` +
-              `350 Fifth Avenue,Empire State Building,New York,NY,10118,USA\n` +
-              `Tokyo Tower,,Minato City,Tokyo,,Japan\n`;
-  const blob = new Blob([csv], { type: 'text/csv' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = 'sample-addresses.csv';
-  a.click();
-};
+  const downloadSample = () => {
+    const csv = `# Smartgeocode Batch Sample CSV - Instructions:\n` +
+                `# Required: 'address' column (street or place name)\n` +
+                `# Optional but recommended: 'landmark' (e.g. Building name), 'city', 'state', 'zip', 'country' (improves accuracy a lot!)\n` +
+                `# Blank or "N/A" rows are skipped automatically\n` +
+                `# Save as .csv and upload below\n\n` +
+                `address,landmark,city,state,zip,country\n` +
+                `1600 Pennsylvania Ave NW,White House,Washington DC,,20500,USA\n` +
+                `Chennai,,Tamil Nadu,,,India\n` +
+                `1251 Avenue of the Americas,,New York,NY,10020,USA\n` +
+                `Ahmedabad,,Gujarat,,,India\n` +
+                `350 Fifth Avenue,Empire State Building,New York,NY,10118,USA\n` +
+                `Tokyo Tower,,Minato City,Tokyo,,Japan\n`;
+    const blob = new Blob([csv], { type: 'text/csv' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'sample-addresses.csv';
+    a.click();
+  };
 
   const handleSingleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -151,9 +160,13 @@ const downloadSample = () => {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ email, address, result: data }),
         });
+        toast.success('Results sent to your email!');
+      } else {
+        toast.error(data.message || 'Geocode failed');
       }
     } catch (error) {
       console.error('Error:', error);
+      toast.error('Geocode failed - check connection');
     } finally {
       setSingleLoading(false);
     }
@@ -166,12 +179,20 @@ const downloadSample = () => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email }),
       });
+
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(`Checkout failed: ${res.status} - ${text}`);
+      }
+
       const data = await res.json();
       if (data.url) {
         window.location.href = data.url;
+        toast.success('Redirecting to Stripe Checkout...');
       }
     } catch (error) {
       console.error('Upsell error:', error);
+      toast.error('Upgrade failed: ' + (error instanceof Error ? error.message : 'Unknown error'));
     }
   };
 
@@ -187,6 +208,7 @@ const downloadSample = () => {
   if (subscription === 'free') {
     return (
       <div className="min-h-screen bg-gradient-to-b from-white to-gray-50">
+        <Toaster position="top-right" />
         <header className="bg-red-600 text-white p-5 shadow-lg">
           <div className="max-w-6xl mx-auto flex justify-between items-center">
             <h1 className="text-3xl font-bold">smartgeocode</h1>
@@ -307,150 +329,152 @@ const downloadSample = () => {
 
   // Premium batch UI (red/white theme)
   return (
-      <>
-    <Toaster position="top-right" />
-    <div className="min-h-screen bg-white">
-      <main className="max-w-7xl mx-auto p-10">
-        {/* Batch Upload */}
-        <div className="bg-gray-50 rounded-3xl shadow-2xl p-10 mb-12 border border-gray-100">
-          <h2 className="text-3xl font-bold text-red-700 mb-8 text-center">Upload CSV for Batch Geocoding</h2>
-          <div className="mb-8 flex flex-wrap gap-6 justify-center">
-            <button
-              onClick={downloadSample}
-              className="text-red-600 underline font-semibold text-lg hover:text-red-800 transition"
-            >
-              Download Sample CSV
-            </button>
-            <button
-              onClick={() => setShowHelp(true)}
-              className="text-red-600 underline font-semibold text-lg hover:text-red-800 transition"
-            >
-              Help / Format Guide
-            </button>
-          </div>
-
-          <form onSubmit={handleBatchUpload} className="space-y-6 max-w-2xl mx-auto">
-            <input
-              type="file"
-              accept=".csv"
-              onChange={(e) => setFile(e.target.files?.[0] || null)}
-              required
-              className="w-full p-5 border-2 border-gray-300 rounded-2xl text-lg file:mr-6 file:py-3 file:px-8 file:rounded-xl file:border-0 file:text-base file:font-bold file:bg-red-50 file:text-red-700 hover:file:bg-red-100 transition"
-            />
-            <button
-              type="submit"
-              disabled={loading}
-              className="w-full bg-red-600 text-white py-5 rounded-2xl font-bold text-xl hover:bg-red-700 transition disabled:opacity-60 disabled:cursor-not-allowed shadow-lg"
-            >
-              {loading ? 'Processing...' : 'Process Batch'}
-            </button>
-          </form>
-
-          {error && (
-            <p className="text-red-600 mt-6 font-semibold text-center text-lg">{error}</p>
-          )}
-
-          {currentBatch && currentBatch.status === 'success' && currentBatch.preview && (
-            <div className="mt-12">
-              <h3 className="text-2xl font-bold mb-6 text-red-700 text-center">Preview (first 50 rows)</h3>
-              <div className="overflow-x-auto rounded-2xl border border-gray-200 shadow-inner">
-                <table className="w-full border-collapse">
-                  <thead className="bg-red-50">
-                    <tr>
-                      <th className="border border-gray-300 p-4 text-left font-semibold text-red-800">Address</th>
-                      <th className="border border-gray-300 p-4 text-left font-semibold text-red-800">Lat</th>
-                      <th className="border border-gray-300 p-4 text-left font-semibold text-red-800">Lng</th>
-                      <th className="border border-gray-300 p-4 text-left font-semibold text-red-800">Formatted</th>
-                      <th className="border border-gray-300 p-4 text-left font-semibold text-red-800">Status</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {currentBatch.preview.map((row: any, i: number) => (
-                      <tr key={i} className="hover:bg-gray-50 transition-colors">
-                        <td className="border border-gray-300 p-4">{row.address || '-'}</td>
-                        <td className="border border-gray-300 p-4 font-medium">{row.lat || 'N/A'}</td>
-                        <td className="border border-gray-300 p-4 font-medium">{row.lng || 'N/A'}</td>
-                        <td className="border border-gray-300 p-4">{row.formatted_address || 'N/A'}</td>
-                        <td className="border border-gray-300 p-4 font-bold text-green-600">{row.status || 'error'}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+    <>
+      <Toaster position="top-right" />
+      <Elements stripe={stripePromise} options={{ locale: 'en' }}>
+        <div className="min-h-screen bg-white">
+          <main className="max-w-7xl mx-auto p-10">
+            {/* Batch Upload */}
+            <div className="bg-gray-50 rounded-3xl shadow-2xl p-10 mb-12 border border-gray-100">
+              <h2 className="text-3xl font-bold text-red-700 mb-8 text-center">Upload CSV for Batch Geocoding</h2>
+              <div className="mb-8 flex flex-wrap gap-6 justify-center">
+                <button
+                  onClick={downloadSample}
+                  className="text-red-600 underline font-semibold text-lg hover:text-red-800 transition"
+                >
+                  Download Sample CSV
+                </button>
+                <button
+                  onClick={() => setShowHelp(true)}
+                  className="text-red-600 underline font-semibold text-lg hover:text-red-800 transition"
+                >
+                  Help / Format Guide
+                </button>
               </div>
-              <button
-                onClick={() => downloadBatch(currentBatch.batchId)}
-                className="mt-8 bg-green-600 text-white py-4 px-10 rounded-2xl font-bold text-lg hover:bg-green-700 transition shadow-lg block mx-auto"
-              >
-                Download Full CSV ({currentBatch.totalRows} rows)
-              </button>
-            </div>
-          )}
-        </div>
 
-        {/* Past Batches */}
-        <div className="bg-gray-50 rounded-3xl shadow-2xl p-10 border border-gray-100">
-          <h2 className="text-3xl font-bold text-red-700 mb-8 text-center">Past Batches</h2>
-          {batches.length === 0 ? (
-            <p className="text-gray-700 text-center text-lg">No batches yet — upload your first CSV!</p>
-          ) : (
-            <div className="overflow-x-auto rounded-2xl border border-gray-200 shadow-inner">
-              <table className="w-full border-collapse">
-                <thead className="bg-red-50">
-                  <tr>
-                    <th className="border border-gray-300 p-4 text-left font-semibold text-red-800">ID</th>
-                    <th className="border border-gray-300 p-4 text-left font-semibold text-red-800">Status</th>
-                    <th className="border border-gray-300 p-4 text-left font-semibold text-red-800">Created</th>
-                    <th className="border border-gray-300 p-4 text-left font-semibold text-red-800">Action</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {batches.map((b) => (
-                    <tr key={b.id} className="hover:bg-gray-50 transition-colors">
-                      <td className="border border-gray-300 p-4 font-medium">{b.id}</td>
-                      <td className="border border-gray-300 p-4 font-medium text-green-600">{b.status}</td>
-                      <td className="border border-gray-300 p-4">{b.created_at}</td>
-                      <td className="border border-gray-300 p-4">
-                        <button
-                          onClick={() => downloadBatch(b.id)}
-                          className="text-red-600 underline hover:text-red-800 font-semibold transition"
-                        >
-                          Download CSV
-                        </button>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </div>
+              <form onSubmit={handleBatchUpload} className="space-y-6 max-w-2xl mx-auto">
+                <input
+                  type="file"
+                  accept=".csv"
+                  onChange={(e) => setFile(e.target.files?.[0] || null)}
+                  required
+                  className="w-full p-5 border-2 border-gray-300 rounded-2xl text-lg file:mr-6 file:py-3 file:px-8 file:rounded-xl file:border-0 file:text-base file:font-bold file:bg-red-50 file:text-red-700 hover:file:bg-red-100 transition"
+                />
+                <button
+                  type="submit"
+                  disabled={loading}
+                  className="w-full bg-red-600 text-white py-5 rounded-2xl font-bold text-xl hover:bg-red-700 transition disabled:opacity-60 disabled:cursor-not-allowed shadow-lg"
+                >
+                  {loading ? 'Processing...' : 'Process Batch'}
+                </button>
+              </form>
 
-        {/* Help Modal */}
-        {showHelp && (
-          <div className="fixed inset-0 bg-black bg-opacity-60 flex items-center justify-center z-50 p-6">
-            <div className="bg-white p-10 rounded-3xl max-w-3xl w-full shadow-2xl relative">
-              <button
-                onClick={() => setShowHelp(false)}
-                className="absolute top-6 right-6 text-gray-600 hover:text-gray-900 text-3xl font-bold transition"
-              >
-                ×
-              </button>
-              <h3 className="text-3xl font-bold mb-8 text-red-700 text-center">CSV Format Help</h3>
-              <p className="mb-4 text-lg"><strong>Required:</strong> <span className="font-bold">address</span> column (street, place, or landmark name).</p>
-              <p className="mb-4 text-lg"><strong>Optional but highly recommended:</strong> name, city, state, zip, country — these dramatically improve accuracy, especially for international addresses.</p>
-              <p className="mb-6 text-lg">Blank or "N/A" rows are automatically skipped.</p>
-              <p className="font-bold text-xl mt-8 mb-4 text-gray-800">Example (copy-paste into Excel/Google Sheets):</p>
-              <pre className="bg-gray-50 p-6 rounded-2xl overflow-x-auto text-sm font-mono border border-gray-200 whitespace-pre-wrap">
-{`address,name,city,state,zip,country
+              {error && (
+                <p className="text-red-600 mt-6 font-semibold text-center text-lg">{error}</p>
+              )}
+
+              {currentBatch && currentBatch.status === 'success' && currentBatch.preview && (
+                <div className="mt-12">
+                  <h3 className="text-2xl font-bold mb-6 text-red-700 text-center">Preview (first 50 rows)</h3>
+                  <div className="overflow-x-auto rounded-2xl border border-gray-200 shadow-inner">
+                    <table className="w-full border-collapse">
+                      <thead className="bg-red-50">
+                        <tr>
+                          <th className="border border-gray-300 p-4 text-left font-semibold text-red-800">Address</th>
+                          <th className="border border-gray-300 p-4 text-left font-semibold text-red-800">Lat</th>
+                          <th className="border border-gray-300 p-4 text-left font-semibold text-red-800">Lng</th>
+                          <th className="border border-gray-300 p-4 text-left font-semibold text-red-800">Formatted</th>
+                          <th className="border border-gray-300 p-4 text-left font-semibold text-red-800">Status</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {currentBatch.preview.map((row: any, i: number) => (
+                          <tr key={i} className="hover:bg-gray-50 transition-colors">
+                            <td className="border border-gray-300 p-4">{row.address || '-'}</td>
+                            <td className="border border-gray-300 p-4 font-medium">{row.lat || 'N/A'}</td>
+                            <td className="border border-gray-300 p-4 font-medium">{row.lng || 'N/A'}</td>
+                            <td className="border border-gray-300 p-4">{row.formatted_address || 'N/A'}</td>
+                            <td className="border border-gray-300 p-4 font-bold text-green-600">{row.status || 'error'}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                  <button
+                    onClick={() => downloadBatch(currentBatch.batchId)}
+                    className="mt-8 bg-green-600 text-white py-4 px-10 rounded-2xl font-bold text-lg hover:bg-green-700 transition shadow-lg block mx-auto"
+                  >
+                    Download Full CSV ({currentBatch.totalRows} rows)
+                  </button>
+                </div>
+              )}
+            </div>
+
+            {/* Past Batches */}
+            <div className="bg-gray-50 rounded-3xl shadow-2xl p-10 border border-gray-100">
+              <h2 className="text-3xl font-bold text-red-700 mb-8 text-center">Past Batches</h2>
+              {batches.length === 0 ? (
+                <p className="text-gray-700 text-center text-lg">No batches yet — upload your first CSV!</p>
+              ) : (
+                <div className="overflow-x-auto rounded-2xl border border-gray-200 shadow-inner">
+                  <table className="w-full border-collapse">
+                    <thead className="bg-red-50">
+                      <tr>
+                        <th className="border border-gray-300 p-4 text-left font-semibold text-red-800">ID</th>
+                        <th className="border border-gray-300 p-4 text-left font-semibold text-red-800">Status</th>
+                        <th className="border border-gray-300 p-4 text-left font-semibold text-red-800">Created</th>
+                        <th className="border border-gray-300 p-4 text-left font-semibold text-red-800">Action</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {batches.map((b) => (
+                        <tr key={b.id} className="hover:bg-gray-50 transition-colors">
+                          <td className="border border-gray-300 p-4 font-medium">{b.id}</td>
+                          <td className="border border-gray-300 p-4 font-medium text-green-600">{b.status}</td>
+                          <td className="border border-gray-300 p-4">{b.created_at}</td>
+                          <td className="border border-gray-300 p-4">
+                            <button
+                              onClick={() => downloadBatch(b.id)}
+                              className="text-red-600 underline hover:text-red-800 font-semibold transition"
+                            >
+                              Download CSV
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+
+            {/* Help Modal */}
+            {showHelp && (
+              <div className="fixed inset-0 bg-black bg-opacity-60 flex items-center justify-center z-50 p-6">
+                <div className="bg-white p-10 rounded-3xl max-w-3xl w-full shadow-2xl relative">
+                  <button
+                    onClick={() => setShowHelp(false)}
+                    className="absolute top-6 right-6 text-gray-600 hover:text-gray-900 text-3xl font-bold transition"
+                  >
+                    ×
+                  </button>
+                  <h3 className="text-3xl font-bold mb-8 text-red-700 text-center">CSV Format Help</h3>
+                  <p className="mb-4 text-lg"><strong>Required:</strong> <span className="font-bold">address</span> column (street, place, or landmark name).</p>
+                  <p className="mb-4 text-lg"><strong>Optional but highly recommended:</strong> landmark (building or place name), city, state, zip, country — these dramatically improve accuracy, especially for international addresses.</p>
+                  <p className="mb-6 text-lg">Blank or "N/A" rows are automatically skipped.</p>
+                  <p className="font-bold text-xl mt-8 mb-4 text-gray-800">Example (copy-paste into Excel/Google Sheets):</p>
+                  <pre className="bg-gray-50 p-6 rounded-2xl overflow-x-auto text-sm font-mono border border-gray-200 whitespace-pre-wrap">
+{`address,landmark,city,state,zip,country
 1600 Pennsylvania Ave NW,White House,Washington DC,,20500,USA
 Chennai,,Tamil Nadu,,,India
 1251 Avenue of the Americas,,New York,NY,10020,USA`}
-              </pre>
-            </div>
-          </div>
-        )}
-      </main>
-    </div>
+                  </pre>
+                </div>
+              </div>
+            )}
+          </main>
+        </div>
+      </Elements>
     </>
   );
 }

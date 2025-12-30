@@ -501,133 +501,54 @@ public class GeocodeController {
             }
 
             PreparedStatement batchStmt = conn.prepareStatement("INSERT INTO batches (user_id, status) VALUES (?, 'processing')", Statement.RETURN_GENERATED_KEYS);
-            batchStmt.setInt(1, userId);
-            batchStmt.executeUpdate();
-            ResultSet generatedKeys = batchStmt.getGeneratedKeys();
-            int batchId = generatedKeys.next() ? generatedKeys.getInt(1) : -1;
+batchStmt.setInt(1, userId);
+batchStmt.executeUpdate();
+ResultSet generatedKeys = batchStmt.getGeneratedKeys();
+int batchId = generatedKeys.next() ? generatedKeys.getInt(1) : -1;
 
-            List<Map<String, String>> fullResults = new ArrayList<>();
-          try (CSVReader csvReader = new CSVReader(new InputStreamReader(file.getInputStream()))) {
+List<Map<String, String>> fullResults = new ArrayList<>();  // <--- KEEP THIS ONE ONLY
+
+try (CSVReader csvReader = new CSVReader(new InputStreamReader(file.getInputStream()))) {
     String[] headers = null;
     String[] line;
-    boolean headerFound = false;
 
+    // Skip all leading comment and empty lines until we find the real header
     while ((line = csvReader.readNext()) != null) {
-        // Skip empty lines and comment lines (starting with #)
+        if (line.length == 0 || (line[0] != null && line[0].trim().startsWith("#"))) {
+            continue;
+        }
+        headers = line;
+        break;
+    }
+
+    if (headers == null || !List.of(headers).contains("address")) {
+        response.put("status", "error");
+        response.put("message", "CSV must have 'address' column");
+        return ResponseEntity.badRequest().body(response);
+    }
+
+    // Now process data rows
+    while ((line = csvReader.readNext()) != null) {
         if (line.length == 0 || (line[0] != null && line[0].trim().startsWith("#"))) {
             continue;
         }
 
-        // First non-skipped line = headers
-        if (!headerFound) {
-            headers = line;
-            headerFound = true;
-            if (headers == null || !List.of(headers).contains("address")) {
-                response.put("status", "error");
-                response.put("message", "CSV must have 'address' column");
-                return ResponseEntity.badRequest().body(response);
-            }
-            continue;
-        }
-
-        // Process data row
         Map<String, String> rowMap = new HashMap<>();
         for (int i = 0; i < headers.length; i++) {
             String header = headers[i].toLowerCase();
             rowMap.put(header, line.length > i ? line[i].trim() : "");
         }
 
-        // Build clean, natural query from available fields only (mimics single lookup)
-        StringBuilder query = new StringBuilder();
+        // Your smart query logic here (build finalQuery, call geocode, fallback, etc.)
+        // ... (keep all your existing query building code unchanged) ...
 
-        // Name first (landmark/business)
-        String name = rowMap.get("name");
-        if (name != null && !name.isEmpty()) {
-            query.append(name.trim());
-        }
-
-        // Address
-        String address = rowMap.get("address");
-        if (address != null && !address.isEmpty() && !address.equalsIgnoreCase("N/A")) {
-            if (query.length() > 0) query.append(", ");
-            query.append(address.trim());
-        }
-
-        // City
-        String city = rowMap.get("city");
-        if (city != null && !city.isEmpty()) {
-            if (query.length() > 0) query.append(", ");
-            query.append(city.trim());
-        }
-
-        // State
-        String state = rowMap.get("state");
-        if (state != null && !state.isEmpty()) {
-            if (query.length() > 0) query.append(", ");
-            query.append(state.trim());
-        }
-
-        // Zip
-        String zip = rowMap.get("zip");
-        if (zip != null && !zip.isEmpty()) {
-            if (query.length() > 0) query.append(", ");
-            query.append(zip.trim());
-        }
-
-        // Country
-        String country = rowMap.get("country");
-        if (country != null && !country.isEmpty()) {
-            if (query.length() > 0) query.append(", ");
-            query.append(country.trim());
-        }
-
-        String finalQuery = query.toString().trim();
-        if (finalQuery.isEmpty()) {
-            rowMap.put("status", "skipped");
-            rowMap.put("message", "Blank or N/A address");
-        } else {
-            // Truncate to safe length
-            if (finalQuery.length() > 80) {
-                finalQuery = finalQuery.substring(0, 80);
-            }
-
-            System.out.println("Sending query to Nominatim: " + finalQuery);
-
-            Map<String, Object> geo = geocode(finalQuery, null);
-            if ("success".equals(geo.get("status"))) {
-                rowMap.put("lat", (String) geo.get("lat"));
-                rowMap.put("lng", (String) geo.get("lng"));
-                rowMap.put("formatted_address", (String) geo.get("formatted_address"));
-                rowMap.put("status", "success");
-            } else {
-                // Fallback: address + country
-                String fallback = address;
-                if (country != null && !country.isEmpty()) {
-                    if (!fallback.isEmpty()) fallback += ", ";
-                    fallback += country.trim();
-                }
-                fallback = fallback.trim();
-                if (!fallback.isEmpty() && !fallback.equals(finalQuery)) {
-                    System.out.println("Fallback query: " + fallback);
-                    geo = geocode(fallback, null);
-                    if ("success".equals(geo.get("status"))) {
-                        rowMap.put("lat", (String) geo.get("lat"));
-                        rowMap.put("lng", (String) geo.get("lng"));
-                        rowMap.put("formatted_address", (String) geo.get("formatted_address"));
-                        rowMap.put("status", "success");
-                    } else {
-                        rowMap.put("status", "error");
-                        rowMap.put("message", (String) geo.get("message"));
-                    }
-                } else {
-                    rowMap.put("status", "error");
-                    rowMap.put("message", (String) geo.get("message"));
-                }
-            }
-        }
-        fullResults.add(rowMap);
+        fullResults.add(rowMap);  // Add to the existing list
     }
-}  // <--- This closing brace is for the try-with-CSVReader
+}
+
+// ... rest of the method (build csvResults, updateBatch, preview, response) unchanged ...
+
+
 
             StringBuilder csvResults = new StringBuilder();
             csvResults.append("address,lat,lng,formatted_address,status,message\n");

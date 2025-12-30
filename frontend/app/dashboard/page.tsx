@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
+import toast, { Toaster } from 'react-hot-toast';
 
 export default function Dashboard() {
   const [subscription, setSubscription] = useState<'free' | 'premium' | 'loading'>('loading');
@@ -81,6 +82,24 @@ const handleBatchUpload = async (e: React.FormEvent) => {
     if (data.status === 'success' && Array.isArray(data.preview)) {
       setCurrentBatch(data);
       loadBatches(email);
+      // Send email with batch summary
+      await fetch('/api/email', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email: email,
+          address: `Batch #${data.batchId} - ${data.totalRows} rows`,
+          result: {
+            message: `Batch processed successfully! Total rows: ${data.totalRows}. Download full results from dashboard.`,
+            // Optional: preview summary
+            preview: data.preview.slice(0, 3).map((row: any) => ({
+              address: row.address,
+              status: row.status,
+            })),
+          },
+        }),
+      });
+      toast.success('Batch processed successfully! Preview below.'); // or use toast
     } else {
       setError(data.message || 'Batch processing failed - check console');
     }
@@ -101,11 +120,10 @@ const handleBatchUpload = async (e: React.FormEvent) => {
 const downloadSample = () => {
   const csv = `# Smartgeocode Batch Sample CSV - Instructions:\n` +
               `# Required: 'address' column (street or place name)\n` +
-              `# Optional but recommended: 'city', 'state', 'zip', 'country' (improves accuracy a lot!)\n` +
-              `# 'name' is optional (e.g., business or landmark name)\n` +
+              `# Optional but recommended: 'landmark' (e.g. Building name), 'city', 'state', 'zip', 'country' (improves accuracy a lot!)\n` +
               `# Blank or "N/A" rows are skipped automatically\n` +
               `# Save as .csv and upload below\n\n` +
-              `address,name,city,state,zip,country\n` +
+              `address,landmark,city,state,zip,country\n` +
               `1600 Pennsylvania Ave NW,White House,Washington DC,,20500,USA\n` +
               `Chennai,,Tamil Nadu,,,India\n` +
               `1251 Avenue of the Americas,,New York,NY,10020,USA\n` +
@@ -289,25 +307,9 @@ const downloadSample = () => {
 
   // Premium batch UI (red/white theme)
   return (
+      <>
+    <Toaster position="top-right" />
     <div className="min-h-screen bg-white">
-      <header className="bg-red-600 text-white p-5 shadow-lg">
-        <div className="max-w-7xl mx-auto flex justify-between items-center">
-          <h1 className="text-3xl font-bold">Smartgeocode Premium Dashboard</h1>
-          <div className="flex items-center space-x-6">
-            <p className="text-lg font-medium">Welcome, {email}!</p>
-            <button
-              onClick={() => {
-                localStorage.clear();
-                window.location.href = '/';
-              }}
-              className="bg-white text-red-600 px-6 py-3 rounded-xl font-bold hover:bg-gray-100 transition shadow"
-            >
-              Log Out
-            </button>
-          </div>
-        </div>
-      </header>
-
       <main className="max-w-7xl mx-auto p-10">
         {/* Batch Upload */}
         <div className="bg-gray-50 rounded-3xl shadow-2xl p-10 mb-12 border border-gray-100">
@@ -449,5 +451,6 @@ Chennai,,Tamil Nadu,,,India
         )}
       </main>
     </div>
+    </>
   );
 }

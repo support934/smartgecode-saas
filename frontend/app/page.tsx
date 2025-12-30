@@ -55,18 +55,7 @@ export default function Home() {
 
   return (
     <main className="min-h-screen bg-white">
-      <header className="bg-red-600 text-white p-4 shadow-lg">
-        <div className="max-w-6xl mx-auto flex justify-between items-center">
-          <h1 className="text-2xl font-bold">Smartgeocode</h1>
-          <div className="space-x-4">
-            <button onClick={handleUpsell} className="bg-white text-red-600 px-4 py-2 rounded-lg hover:bg-gray-100 font-semibold">
-              Upgrade to Premium ($29/mo)
-            </button>
-          </div>
-        </div>
-      </header>
-
-      <div className="max-w-4xl mx-auto p-8">
+            <div className="max-w-4xl mx-auto p-8">
         <section className="text-center mb-8">
           <h2 className="text-4xl font-bold text-gray-800 mb-4">Stop Wasting Time on Address Validation</h2>
           <p className="text-xl text-gray-600 mb-6">Get precise lat/lng coordinates in seconds. Save your team hours—free trial for singles, premium for unlimited batches at $29/mo.</p>
@@ -134,10 +123,10 @@ export default function Home() {
             <h3 className="font-semibold mb-2">Lightning-Fast Results</h3>
             <p className="text-gray-600">Accurate lat/lng in seconds—no API limits for free trials. Save your team hours on manual work.</p>
           </div>
-          <div className="bg-white p-6 rounded-xl shadow-md text-center">
-            <i className="fas fa-envelope-open text-3xl text-red-500 mb-4"></i>
-            <h3 className="font-semibold mb-2">Lead Generation Built-In</h3>
-            <p className="text-gray-600">Capture emails with every lookup—grow your list effortlessly and convert visitors to customers.</p>
+          <div className="bg-white p-6 rounded-xl shadow-md text-center border border-gray-100 hover:shadow-xl transition">
+            <i className="fas fa-envelope text-5xl text-red-500 mb-6"></i>
+           <h3 className="text-xl font-bold mb-3">Email Results Instantly</h3>
+            <p className="text-gray-600">Results sent straight to your inbox—no more copying/pasting<br />Every lookup is emailed automatically so you can reference it anytime.</p>
           </div>
           <div className="bg-white p-6 rounded-xl shadow-md text-center">
             <i className="fas fa-rocket text-3xl text-red-500 mb-4"></i>

@@ -524,7 +524,7 @@ public ResponseEntity<Map<String, Object>> batchGeocode(@RequestParam("file") Mu
                 break;
             }
 
-            if (headers == null || !java.util.Arrays.asList(headers).contains("address")) {
+            if (headers == null || headers.length == 0 || !java.util.Arrays.asList(headers).contains("address")) {
                 response.put("status", "error");
                 response.put("message", "CSV must have 'address' column");
                 return ResponseEntity.badRequest().body(response);

@@ -512,22 +512,23 @@ try (CSVReader csvReader = new CSVReader(new InputStreamReader(file.getInputStre
     String[] headers = null;
     String[] line;
 
-    // Skip all leading comment and empty lines until we find the real header
+    // Phase 1: Skip all leading comments and empty lines until real header
     while ((line = csvReader.readNext()) != null) {
         if (line.length == 0 || (line[0] != null && line[0].trim().startsWith("#"))) {
             continue;
         }
+        // First valid line = headers
         headers = line;
-        break;
+        break;  // Stop here - we found the header
     }
 
-    if (headers == null || !List.of(headers).contains("address")) {
+    if (headers == null || !java.util.Arrays.asList(headers).contains("address")) {
         response.put("status", "error");
         response.put("message", "CSV must have 'address' column");
         return ResponseEntity.badRequest().body(response);
     }
 
-    // Now process data rows
+    // Phase 2: Process data rows (skip any remaining comments)
     while ((line = csvReader.readNext()) != null) {
         if (line.length == 0 || (line[0] != null && line[0].trim().startsWith("#"))) {
             continue;
@@ -539,10 +540,10 @@ try (CSVReader csvReader = new CSVReader(new InputStreamReader(file.getInputStre
             rowMap.put(header, line.length > i ? line[i].trim() : "");
         }
 
-        // Your smart query logic here (build finalQuery, call geocode, fallback, etc.)
-        // ... (keep all your existing query building code unchanged) ...
+        // Your existing smart query logic here (build finalQuery, call geocode, fallback, etc.)
+        // ... keep all your query building code unchanged ...
 
-        fullResults.add(rowMap);  // Add to the existing list
+        fullResults.add(rowMap);
     }
 }
 

@@ -17,6 +17,7 @@ export default function Dashboard() {
   const [currentBatch, setCurrentBatch] = useState<any>(null);
   const [error, setError] = useState('');
   const [showHelp, setShowHelp] = useState(false);
+   const [lastAddress, setLastAddress] = useState<string>('');
 
   // Single lookup for free UI
   const [address, setAddress] = useState('');
@@ -155,6 +156,7 @@ export default function Dashboard() {
       const data = await res.json();
       setSingleResults(data);
       if (data.status === 'success') {
+        setLastAddress(address); // Save the address used
         await fetch('/api/email', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -172,29 +174,37 @@ export default function Dashboard() {
     }
   };
 
-  const handleUpsell = async () => {
-    try {
-      const res = await fetch('/api/checkout', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email }),
-      });
+ const handleUpsell = async () => {
+  
+  try {
+    console.log('Sending to checkout:', {
+    email,
+    address: lastAddress || 'Premium Batch Upgrade from dashboard'
+    });
+    const res = await fetch('/api/checkout', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        email,
+        address: lastAddress || 'Premium Batch Upgrade from dashboard',
+      }),
+    });
 
-      if (!res.ok) {
-        const text = await res.text();
-        throw new Error(`Checkout failed: ${res.status} - ${text}`);
-      }
-
-      const data = await res.json();
-      if (data.url) {
-        window.location.href = data.url;
-        toast.success('Redirecting to Stripe Checkout...');
-      }
-    } catch (error) {
-      console.error('Upsell error:', error);
-      toast.error('Upgrade failed: ' + (error instanceof Error ? error.message : 'Unknown error'));
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(`Checkout failed: ${res.status} - ${text}`);
     }
-  };
+
+    const data = await res.json();
+    if (data.url) {
+      window.location.href = data.url;
+      toast.success('Redirecting to Stripe Checkout...');
+    }
+  } catch (error) {
+    console.error('Upsell error:', error);
+    toast.error('Upgrade failed: ' + (error instanceof Error ? error.message : 'Unknown'));
+  }
+};
 
   const logout = () => {
     localStorage.clear();
@@ -214,8 +224,11 @@ export default function Dashboard() {
             <h1 className="text-3xl font-bold">smartgeocode</h1>
             <div className="space-x-4">
               <button
-                onClick={handleUpsell}
-                className="bg-white text-red-600 px-6 py-2 rounded-lg font-semibold hover:bg-gray-100 transition"
+  onClick={handleUpsell}
+  disabled={!singleResults || singleResults.status !== 'success'}
+  className={`mt-4 bg-green-600 text-white px-8 py-3 rounded-lg font-bold hover:bg-green-700 transition ${
+    !singleResults || singleResults.status !== 'success' ? 'opacity-50 cursor-not-allowed' : ''
+  }`}
               >
                 Upgrade to Premium ($29/mo)
               </button>

@@ -3,8 +3,11 @@ import Stripe from 'stripe';
 
 export async function POST(request: NextRequest) {
   try {
-    const payload = await request.json();
-    console.log('Checkout request received:', payload); // Log full body
+    const rawBody = await request.text(); // Read raw first
+    console.log('Raw request body:', rawBody);
+
+    const payload = JSON.parse(rawBody);
+    console.log('Parsed payload:', payload);
 
     const { email, address } = payload;
 

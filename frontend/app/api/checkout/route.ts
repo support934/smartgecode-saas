@@ -3,70 +3,63 @@ import Stripe from 'stripe';
 
 export async function POST(request: NextRequest) {
   try {
-    // Parse request body safely
     const payload = await request.json();
+    console.log('Checkout request received:', payload); // Log full body
+
     const { email, address } = payload;
 
-    // Required fields validation
     if (!email) {
-      return NextResponse.json(
-        { error: 'Email is required' },
-        { status: 400 }
-      );
+      console.error('Missing email in request');
+      return NextResponse.json({ error: 'Email is required' }, { status: 400 });
     }
 
-    // Check for Stripe secret key
+    if (!address) {
+      console.error('Missing address in request');
+      return NextResponse.json({ error: 'Address is required' }, { status: 400 });
+    }
+
+    // Validate email format (basic)
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(email)) {
+      console.error('Invalid email format:', email);
+      return NextResponse.json({ error: 'Invalid email format' }, { status: 400 });
+    }
+
     const stripeSecretKey = process.env.STRIPE_SECRET_KEY;
     if (!stripeSecretKey) {
-      console.error('STRIPE_SECRET_KEY is missing in environment variables');
-      return NextResponse.json(
-        { error: 'Server configuration error: Missing Stripe key' },
-        { status: 500 }
-      );
+      console.error('STRIPE_SECRET_KEY missing');
+      return NextResponse.json({ error: 'Server configuration error' }, { status: 500 });
     }
 
-    // Initialize Stripe
     const stripe = new Stripe(stripeSecretKey, {
       apiVersion: '2025-11-17.clover',
     });
 
-    console.log(`Creating checkout session for email: ${email}`);
+    console.log('Creating Stripe session for:', { email, address });
 
-    // Create Checkout Session
     const session = await stripe.checkout.sessions.create({
-      mode: 'subscription', // Use 'subscription' for recurring, 'payment' for one-time
+      mode: 'subscription',  // Changed back to recurring for $29/mo
       payment_method_types: ['card'],
       line_items: [
         {
-          price: 'price_1SdTlhA5JR9NQZvDky89Qo7u',  // Your $29 recurring Price ID
-          quantity: 1  
+          price: 'price_1Sd8JxA5JR9NQZvD0GCmjm6R',  // ← YOUR LIVE $29/mo RECURRING PRICE ID
+          quantity: 1,
         },
       ],
       customer_email: email,
       success_url: 'https://geocode-frontend.smartgeocode.io/success?session_id={CHECKOUT_SESSION_ID}',
       cancel_url: 'https://geocode-frontend.smartgeocode.io?cancelled=true',
-      metadata: { email, address }, // Useful for webhooks
+      metadata: { email, address },  // For webhook
     });
 
-    console.log(`Checkout session created: ${session.id}`);
+    console.log('Session created:', session.id);
 
     return NextResponse.json({ url: session.url });
   } catch (error: any) {
-    // Detailed error logging
-    console.error('Checkout route error:', {
-      message: error.message,
-      stack: error.stack,
-      type: error.type,
-      code: error.code,
-    });
-
-    // Return meaningful error to frontend
-    const status = error.statusCode || 500;
-    const message = error.message || 'An unexpected error occurred during checkout';
-
+    console.error('Checkout error:', error.message, error.stack);
     return NextResponse.json(
-      { error: message },
-      { status }
+      { error: error.message || 'Checkout failed' },
+      { status: error.statusCode || 500 }
     );
   }
 }

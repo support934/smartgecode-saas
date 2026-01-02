@@ -4,9 +4,12 @@ import { useState, useEffect } from 'react';
 import toast, { Toaster } from 'react-hot-toast';
 import { loadStripe } from '@stripe/stripe-js';
 import { Elements } from '@stripe/react-stripe-js';
+import Script from 'next/script'; // ← ADD THIS LINE
 
 // Load Stripe promise (only once, outside component)
 const stripePromise = loadStripe(process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY!);
+
+// Final deploy force - address fix - 2025-12-31
 
 export default function Dashboard() {
   const [subscription, setSubscription] = useState<'free' | 'premium' | 'loading'>('loading');
@@ -35,7 +38,7 @@ export default function Dashboard() {
             const status = data.subscription_status || 'free';
             setSubscription(status);
             if (status === 'premium') {
-              loadBatches(storedEmail);
+              loadBatches(storedEmail);              
             }
           })
           .catch(() => setSubscription('free'));
@@ -175,19 +178,17 @@ export default function Dashboard() {
   };
 
  const handleUpsell = async () => {
-  
   try {
-    console.log('Sending to checkout:', {
-    email,
-    address: lastAddress || 'Premium Batch Upgrade from dashboard'
-    });
+    const payload = {
+      email,
+      address: 'Hardcoded Test Address - Chennai India' // TEMP TEST
+    };
+    console.log('Sending payload:', payload); // This will show in browser console
+
     const res = await fetch('/api/checkout', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        email,
-        address: lastAddress || 'Premium Batch Upgrade from dashboard',
-      }),
+      body: JSON.stringify(payload),
     });
 
     if (!res.ok) {
@@ -342,8 +343,17 @@ export default function Dashboard() {
 
   // Premium batch UI (red/white theme)
   return (
+    // FORCE DEPLOY V4 - 2025-12-31 - ADDRESS FIX FINAL
     <>
       <Toaster position="top-right" />
+
+      {/* Force reload JS bundle with cache busting */}
+    <Script
+     src={`/_next/static/chunks/pages/dashboard.js?v=${Date.now()}`}
+     strategy="beforeInteractive"
+    />
+      
+
       <Elements stripe={stripePromise} options={{ locale: 'en' }}>
         <div className="min-h-screen bg-white">
           <main className="max-w-7xl mx-auto p-10">
@@ -460,7 +470,32 @@ export default function Dashboard() {
                 </div>
               )}
             </div>
-
+            {subscription === 'premium' && (
+                <div className="mt-8 text-center">
+                  <button
+                    onClick={async () => {
+                      try {
+                        const res = await fetch('/api/create-portal-session', {
+                          method: 'POST',
+                          headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({ email }),
+                        });
+                        const data = await res.json();
+                        if (data.url) {
+                          window.location.href = data.url;
+                        } else {
+                          toast.error('Failed to open portal');
+                        }
+                      } catch (err) {
+                        toast.error('Error opening billing portal');
+                      }
+                    }}
+                    className="bg-blue-600 text-white px-8 py-3 rounded-lg font-bold hover:bg-blue-700 transition"
+                  >
+                    Manage Subscription / Cancel
+                  </button>
+                </div>
+              )}  
             {/* Help Modal */}
             {showHelp && (
               <div className="fixed inset-0 bg-black bg-opacity-60 flex items-center justify-center z-50 p-6">

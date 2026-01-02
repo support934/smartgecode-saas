@@ -93,8 +93,16 @@
 			<artifactId>opencsv</artifactId>
 			<version>5.9</version>
 		</dependency>
+
+		<!-- ADD THIS: Stripe Java SDK (main dependencies section) -->
+		<dependency>
+			<groupId>com.stripe</groupId>
+			<artifactId>stripe-java</artifactId>
+			<version>26.2.0</version>
+		</dependency>
 	</dependencies>
 
+	<!-- Optional: Keep dependencyManagement for version management only -->
 	<dependencyManagement>
 		<dependencies>
 			<dependency>
@@ -145,5 +153,4 @@
 			</plugin>
 		</plugins>
 	</build>
-
 </project>

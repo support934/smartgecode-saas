@@ -47,9 +47,13 @@ import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 
 import com.stripe.Stripe;
-import com.stripe.param.billingportal.SessionCreateParams;  // Correct package
-import com.stripe.model.billingportal.Session;               // Correct package
-import com.stripe.exception.StripeException;                 // Optional but good for error handling
+import com.stripe.param.billingportal.SessionCreateParams;
+import com.stripe.model.billingportal.Session;
+import com.stripe.exception.StripeException;
+import com.stripe.model.Event;
+import com.stripe.net.Webhook;
+import com.stripe.model.Subscription;
+import com.stripe.exception.SignatureVerificationException;
 
 @RestController
 @RequestMapping("/api")
@@ -421,6 +425,32 @@ public class GeocodeController {
         }
     }
 
+    @PostMapping("/stripe-webhook")
+    public ResponseEntity<String> stripeWebhook(@RequestBody String payload, @RequestHeader("Stripe-Signature") String sigHeader) {
+      String webhookSecret = System.getenv("STRIPE_WEBHOOK_SECRET");
+      try {
+        Event event = Webhook.constructEvent(payload, sigHeader, webhookSecret);
+
+        if ("customer.subscription.deleted".equals(event.getType())) {
+          Subscription subscription = (Subscription) event.getDataObjectDeserializer().getObject().get();
+          String customerId = subscription.getCustomer();
+          // Update DB
+          try (Connection conn = dataSource.getConnection()) {
+            PreparedStatement stmt = conn.prepareStatement("UPDATE users SET subscription_status = 'canceled' WHERE stripe_customer_id = ?");
+            stmt.setString(1, customerId);
+            stmt.executeUpdate();
+          }
+        }
+
+        return ResponseEntity.ok("Webhook received");
+      } catch (SignatureVerificationException e) {
+        return ResponseEntity.status(400).body("Webhook signature invalid");
+      } catch (Exception e) {
+        System.err.println("Webhook error: " + e.getMessage());
+        return ResponseEntity.status(500).body("Webhook failed");
+      }
+    }
+
     private static class PremiumRequest {
         private String email;
 
@@ -520,34 +550,57 @@ public class GeocodeController {
             try (CSVReader csvReader = new CSVReader(new InputStreamReader(file.getInputStream()))) {
                 String[] headers = null;
                 String[] line;
+                int skippedLeading = 0;
+                int skippedData = 0;
 
                 // Phase 1: Skip leading comments/empty until header
                 while ((line = csvReader.readNext()) != null) {
                     if (line.length == 0 || (line[0] != null && line[0].trim().startsWith("#"))) {
+                        skippedLeading++;
                         continue;
                     }
                     headers = line;
                     break;
                 }
 
-                if (headers == null || !java.util.Arrays.asList(headers).contains("address")) {
-                    System.out.println("=== DEBUG: Headers not found or missing 'address': " + (headers != null ? java.util.Arrays.toString(headers) : "null"));
+                System.out.println("DEBUG: Skipped " + skippedLeading + " leading comment/blank lines");
+
+                if (headers == null) {
+                    System.out.println("DEBUG: No header row found after skipping all lines");
                     response.put("status", "error");
-                    response.put("message", "CSV must have 'address' column");
+                    response.put("message", "CSV is empty or has only comments/blank lines - no header row found");
                     return ResponseEntity.badRequest().body(response);
                 }
 
-                System.out.println("=== DEBUG: Headers found: " + java.util.Arrays.toString(headers));
+                // Case-insensitive + trimmed header check for 'address'
+                int addressIndex = -1;
+                for (int i = 0; i < headers.length; i++) {
+                    String headerTrim = headers[i].trim().toLowerCase();
+                    if (headerTrim.equals("address")) {
+                        addressIndex = i;
+                        break;
+                    }
+                }
+
+                if (addressIndex == -1) {
+                    System.out.println("DEBUG: Headers found but missing 'address' (case-insensitive): " + java.util.Arrays.toString(headers));
+                    response.put("status", "error");
+                    response.put("message", "CSV must have an 'address' column (checked case-insensitively)");
+                    return ResponseEntity.badRequest().body(response);
+                }
+
+                System.out.println("DEBUG: Headers found with 'address' at index " + addressIndex + ": " + java.util.Arrays.toString(headers));
 
                 // Phase 2: Process data rows
                 while ((line = csvReader.readNext()) != null) {
                     if (line.length == 0 || (line[0] != null && line[0].trim().startsWith("#"))) {
+                        skippedData++;
                         continue;
                     }
 
                     Map<String, String> rowMap = new HashMap<>();
                     for (int i = 0; i < headers.length; i++) {
-                        String header = headers[i].toLowerCase();
+                        String header = headers[i].trim().toLowerCase();
                         rowMap.put(header, line.length > i ? line[i].trim() : "");
                     }
 
@@ -633,6 +686,8 @@ public class GeocodeController {
                     }
                     fullResults.add(rowMap);
                 }
+
+                System.out.println("=== DEBUG: Skipped " + skippedData + " data comment/blank lines during processing");
             }
 
             // Build CSV results
@@ -653,10 +708,6 @@ public class GeocodeController {
             updateBatch.setInt(2, batchId);
             updateBatch.executeUpdate();
 
-            // Store Stripe customer ID if session has it (for portal)
-            // (Add this if you have session from Stripe in this method; otherwise, move to webhook)
-            // String customerId = "from_stripe_session"; // Update as needed
-
             List<Map<String, String>> preview = fullResults.subList(0, Math.min(50, fullResults.size()));
 
             response.put("status", "success");
@@ -669,7 +720,7 @@ public class GeocodeController {
         } catch (Exception e) {
             e.printStackTrace();
             response.put("status", "error");
-            response.put("message", "Batch processing failed—try again");
+            response.put("message", "Batch processing failed—try again: " + e.getMessage());
             return ResponseEntity.status(500).body(response);
         }
     }
@@ -739,41 +790,41 @@ public class GeocodeController {
         }
     }
 
-@PostMapping("/create-portal-session")
-public ResponseEntity<Map<String, Object>> createPortalSession(@RequestBody Map<String, String> payload) {
-    Map<String, Object> response = new HashMap<>();
-    try {
-        String email = payload.get("email");
-        Connection conn = dataSource.getConnection();
-        PreparedStatement stmt = conn.prepareStatement("SELECT stripe_customer_id FROM users WHERE email = ?");
-        stmt.setString(1, email);
-        ResultSet rs = stmt.executeQuery();
-        if (!rs.next() || rs.getString("stripe_customer_id") == null) {
-            response.put("error", "No Stripe customer found");
-            return ResponseEntity.status(400).body(response);
+    @PostMapping("/create-portal-session")
+    public ResponseEntity<Map<String, Object>> createPortalSession(@RequestBody Map<String, String> payload) {
+        Map<String, Object> response = new HashMap<>();
+        try {
+            String email = payload.get("email");
+            Connection conn = dataSource.getConnection();
+            PreparedStatement stmt = conn.prepareStatement("SELECT stripe_customer_id FROM users WHERE email = ?");
+            stmt.setString(1, email);
+            ResultSet rs = stmt.executeQuery();
+            if (!rs.next() || rs.getString("stripe_customer_id") == null) {
+                response.put("error", "No Stripe customer found");
+                return ResponseEntity.status(400).body(response);
+            }
+            String customerId = rs.getString("stripe_customer_id");
+
+            // Correct Billing Portal session creation
+            SessionCreateParams params = SessionCreateParams.builder()
+                .setCustomer(customerId)
+                .setReturnUrl("https://geocode-frontend.smartgeocode.io/dashboard")
+                .build();
+
+            Session session = Session.create(params);
+
+            response.put("url", session.getUrl());
+            return ResponseEntity.ok(response);
+        } catch (StripeException e) {
+            e.printStackTrace();
+            response.put("error", "Stripe error: " + e.getMessage());
+            return ResponseEntity.status(500).body(response);
+        } catch (Exception e) {
+            e.printStackTrace();
+            response.put("error", "Failed to create portal session");
+            return ResponseEntity.status(500).body(response);
         }
-        String customerId = rs.getString("stripe_customer_id");
-
-        // Correct Billing Portal session creation (current SDK structure)
-        SessionCreateParams params = SessionCreateParams.builder()
-            .setCustomer(customerId)
-            .setReturnUrl("https://geocode-frontend.smartgeocode.io/dashboard")
-            .build();
-
-        Session session = Session.create(params);
-
-        response.put("url", session.getUrl());
-        return ResponseEntity.ok(response);
-    } catch (StripeException e) {
-        e.printStackTrace();
-        response.put("error", "Stripe error: " + e.getMessage());
-        return ResponseEntity.status(500).body(response);
-    } catch (Exception e) {
-        e.printStackTrace();
-        response.put("error", "Failed to create portal session");
-        return ResponseEntity.status(500).body(response);
     }
-}
 
     @GetMapping("/test-db")
     public String testDbConnection() {

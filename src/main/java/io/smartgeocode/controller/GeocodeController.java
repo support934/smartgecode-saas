@@ -509,230 +509,231 @@ public class GeocodeController {
         }
     }
 
-    @PostMapping(value = "/batch-geocode", consumes = "multipart/form-data")
-    public ResponseEntity<Map<String, Object>> batchGeocode(@RequestParam("file") MultipartFile file, @RequestParam("email") String email) {
-        Map<String, Object> response = new HashMap<>();
+ @PostMapping(value = "/batch-geocode", consumes = "multipart/form-data")
+public ResponseEntity<Map<String, Object>> batchGeocode(@RequestParam("file") MultipartFile file, @RequestParam("email") String email) {
+    Map<String, Object> response = new HashMap<>();
 
-        if (file.isEmpty()) {
+    if (file.isEmpty()) {
+        response.put("status", "error");
+        response.put("message", "No file uploaded");
+        return ResponseEntity.badRequest().body(response);
+    }
+
+    try (Connection conn = dataSource.getConnection()) {
+        PreparedStatement userStmt = conn.prepareStatement("SELECT id, subscription_status FROM users WHERE email = ?");
+        userStmt.setString(1, email);
+        ResultSet rs = userStmt.executeQuery();
+        if (!rs.next()) {
             response.put("status", "error");
-            response.put("message", "No file uploaded");
-            return ResponseEntity.badRequest().body(response);
+            response.put("message", "User not found");
+            return ResponseEntity.status(404).body(response);
+        }
+        int userId = rs.getInt("id");
+        String subscription = rs.getString("subscription_status");
+        if (!"premium".equals(subscription)) {
+            response.put("status", "error");
+            response.put("message", "Premium subscription required");
+            return ResponseEntity.status(403).body(response);
         }
 
-        try (Connection conn = dataSource.getConnection()) {
-            PreparedStatement userStmt = conn.prepareStatement("SELECT id, subscription_status FROM users WHERE email = ?");
-            userStmt.setString(1, email);
-            ResultSet rs = userStmt.executeQuery();
-            if (!rs.next()) {
+        int batchId = -1;
+        PreparedStatement batchStmt = conn.prepareStatement("INSERT INTO batches (user_id, status) VALUES (?, 'processing')", Statement.RETURN_GENERATED_KEYS);
+        batchStmt.setInt(1, userId);
+        batchStmt.executeUpdate();
+        ResultSet generatedKeys = batchStmt.getGeneratedKeys();
+        if (generatedKeys.next()) {
+            batchId = generatedKeys.getInt(1);
+        }
+
+        List<Map<String, String>> fullResults = new ArrayList<>();
+        System.out.println("=== DEBUG: NEW COMMENT-SKIP VERSION LIVE - 2025-12-30 ===");
+        try (CSVReader csvReader = new CSVReader(new InputStreamReader(file.getInputStream()))) {
+            String[] headers = null;
+            String[] line;
+            int skippedLeading = 0;
+            int skippedData = 0;
+
+            // Phase 1: Skip leading comments/empty until header
+            while ((line = csvReader.readNext()) != null) {
+                if (line.length == 0 || (line[0] != null && line[0].trim().startsWith("#")) || allColumnsEmpty(line)) {
+                    skippedLeading++;
+                    continue;
+                }
+                headers = line;
+                break;
+            }
+
+            System.out.println("DEBUG: Skipped " + skippedLeading + " leading comment/blank lines");
+
+            if (headers == null) {
+                System.out.println("DEBUG: No header row found after skipping all lines");
                 response.put("status", "error");
-                response.put("message", "User not found");
-                return ResponseEntity.status(404).body(response);
-            }
-            int userId = rs.getInt("id");
-            String subscription = rs.getString("subscription_status");
-            if (!"premium".equals(subscription)) {
-                response.put("status", "error");
-                response.put("message", "Premium subscription required");
-                return ResponseEntity.status(403).body(response);
+                response.put("message", "CSV is empty or has only comments/blank lines - no header row");
+                return ResponseEntity.badRequest().body(response);
             }
 
-            int batchId = -1;
-            PreparedStatement batchStmt = conn.prepareStatement("INSERT INTO batches (user_id, status) VALUES (?, 'processing')", Statement.RETURN_GENERATED_KEYS);
-            batchStmt.setInt(1, userId);
-            batchStmt.executeUpdate();
-            ResultSet generatedKeys = batchStmt.getGeneratedKeys();
-            if (generatedKeys.next()) {
-                batchId = generatedKeys.getInt(1);
-            }
-
-            List<Map<String, String>> fullResults = new ArrayList<>();
-            System.out.println("=== DEBUG: NEW COMMENT-SKIP VERSION LIVE - 2025-12-30 ===");
-            try (CSVReader csvReader = new CSVReader(new InputStreamReader(file.getInputStream()))) {
-                String[] headers = null;
-                String[] line;
-                int skippedLeading = 0;
-                int skippedData = 0;
-
-                // Phase 1: Skip leading comments/empty until header
-                while ((line = csvReader.readNext()) != null) {
-                    if (line.length == 0 || (line[0] != null && line[0].trim().startsWith("#")) || allColumnsEmpty(line)) {
-                        skippedLeading++;
-                        continue;
-                    }
-                    headers = line;
+            // Case-insensitive check for 'address'
+            int addressIndex = -1;
+            for (int i = 0; i < headers.length; i++) {
+                String headerTrim = headers[i].trim().toLowerCase();
+                if (headerTrim.equals("address")) {
+                    addressIndex = i;
                     break;
                 }
+            }
 
-                System.out.println("DEBUG: Skipped " + skippedLeading + " leading comment/blank lines");
+            if (addressIndex == -1) {
+                System.out.println("DEBUG: Headers found but missing 'address' (case-insensitive): " + java.util.Arrays.toString(headers));
+                response.put("status", "error");
+                response.put("message", "CSV must have an 'address' column (case-insensitive check)");
+                return ResponseEntity.badRequest().body(response);
+            }
 
-                if (headers == null) {
-                    System.out.println("DEBUG: No header row found after skipping all lines");
-                    response.put("status", "error");
-                    response.put("message", "CSV is empty or has only comments/blank lines - no header row");
-                    return ResponseEntity.badRequest().body(response);
+            System.out.println("DEBUG: Headers found with 'address' at index " + addressIndex + ": " + java.util.Arrays.toString(headers));
+
+            // Phase 2: Process data rows
+            while ((line = csvReader.readNext()) != null) {
+                if (line.length == 0 || (line[0] != null && line[0].trim().startsWith("#")) || allColumnsEmpty(line)) {
+                    skippedData++;
+                    continue;
                 }
 
-                // Case-insensitive check for 'address'
-                int addressIndex = -1;
+                Map<String, String> rowMap = new HashMap<>();
                 for (int i = 0; i < headers.length; i++) {
-                    String headerTrim = headers[i].trim().toLowerCase();
-                    if (headerTrim.equals("address")) {
-                        addressIndex = i;
-                        break;
-                    }
+                    String header = headers[i].trim().toLowerCase();
+                    rowMap.put(header, line.length > i ? line[i].trim() : "");
                 }
 
-                if (addressIndex == -1) {
-                    System.out.println("DEBUG: Headers found but missing 'address' (case-insensitive): " + java.util.Arrays.toString(headers));
-                    response.put("status", "error");
-                    response.put("message", "CSV must have an 'address' column (case-insensitive check)");
-                    return ResponseEntity.badRequest().body(response);
+                // Build clean query (landmark/name first - correct priority)
+                StringBuilder query = new StringBuilder();
+
+                String name = rowMap.get("name");
+                if (name != null && !name.isEmpty()) {
+                    query.append(name.trim());
                 }
 
-                System.out.println("DEBUG: Headers found with 'address' at index " + addressIndex + ": " + java.util.Arrays.toString(headers));
+                String address = rowMap.get("address");
+                if (address != null && !address.isEmpty() && !address.equalsIgnoreCase("N/A")) {
+                    if (query.length() > 0) query.append(", ");
+                    query.append(address.trim());
+                }
 
-                // Phase 2: Process data rows
-                while ((line = csvReader.readNext()) != null) {
-                    if (line.length == 0 || (line[0] != null && line[0].trim().startsWith("#")) || allColumnsEmpty(line)) {
-                        skippedData++;
-                        continue;
+                String city = rowMap.get("city");
+                if (city != null && !city.isEmpty()) {
+                    if (query.length() > 0) query.append(", ");
+                    query.append(city.trim());
+                }
+
+                String state = rowMap.get("state");
+                if (state != null && !state.isEmpty()) {
+                    if (query.length() > 0) query.append(", ");
+                    query.append(state.trim());
+                }
+
+                String zip = rowMap.get("zip");
+                if (zip != null && !zip.isEmpty()) {
+                    if (query.length() > 0) query.append(", ");
+                    query.append(zip.trim());
+                }
+
+                String country = rowMap.get("country");
+                if (country != null && !country.isEmpty()) {
+                    if (query.length() > 0) query.append(", ");
+                    query.append(country.trim());
+                }
+
+                String finalQuery = query.toString().trim();
+                if (finalQuery.isEmpty()) {
+                    rowMap.put("status", "skipped");
+                    rowMap.put("message", "Blank or N/A address");
+                } else {
+                    if (finalQuery.length() > 80) {
+                        finalQuery = finalQuery.substring(0, 80);
                     }
 
-                    Map<String, String> rowMap = new HashMap<>();
-                    for (int i = 0; i < headers.length; i++) {
-                        String header = headers[i].trim().toLowerCase();
-                        rowMap.put(header, line.length > i ? line[i].trim() : "");
-                    }
+                    System.out.println("Sending query to Nominatim: " + finalQuery);
 
-                    // Build clean query (name/landmark first for landmarks)
-                    StringBuilder query = new StringBuilder();
-
-                    String name = rowMap.get("name");
-                    if (name != null && !name.isEmpty()) {
-                        query.append(name.trim());
-                    }
-
-                    String address = rowMap.get("address");
-                    if (address != null && !address.isEmpty() && !address.equalsIgnoreCase("N/A")) {
-                        if (query.length() > 0) query.append(", ");
-                        query.append(address.trim());
-                    }
-
-                    String city = rowMap.get("city");
-                    if (city != null && !city.isEmpty()) {
-                        if (query.length() > 0) query.append(", ");
-                        query.append(city.trim());
-                    }
-
-                    String state = rowMap.get("state");
-                    if (state != null && !state.isEmpty()) {
-                        if (query.length() > 0) query.append(", ");
-                        query.append(state.trim());
-                    }
-
-                    String zip = rowMap.get("zip");
-                    if (zip != null && !zip.isEmpty()) {
-                        if (query.length() > 0) query.append(", ");
-                        query.append(zip.trim());
-                    }
-
-                    String country = rowMap.get("country");
-                    if (country != null && !country.isEmpty()) {
-                        if (query.length() > 0) query.append(", ");
-                        query.append(country.trim());
-                    }
-
-                    String finalQuery = query.toString().trim();
-                    if (finalQuery.isEmpty()) {
-                        rowMap.put("status", "skipped");
-                        rowMap.put("message", "Blank or N/A address");
+                    Map<String, Object> geo = geocode(finalQuery, null);
+                    if ("success".equals(geo.get("status"))) {
+                        rowMap.put("lat", (String) geo.get("lat"));
+                        rowMap.put("lng", (String) geo.get("lng"));
+                        rowMap.put("formatted_address", (String) geo.get("formatted_address"));
+                        rowMap.put("status", "success");
                     } else {
-                        if (finalQuery.length() > 80) {
-                            finalQuery = finalQuery.substring(0, 80);
+                        // Improved fallback: always try landmark + country if available
+                        String fallback = name != null && !name.isEmpty() ? name.trim() : address;
+                        if (country != null && !country.isEmpty()) {
+                            if (!fallback.isEmpty()) fallback += ", ";
+                            fallback += country.trim();
                         }
-
-                        System.out.println("Sending query to Nominatim: " + finalQuery);
-
-                        Map<String, Object> geo = geocode(finalQuery, null);
-                        if ("success".equals(geo.get("status"))) {
-                            rowMap.put("lat", (String) geo.get("lat"));
-                            rowMap.put("lng", (String) geo.get("lng"));
-                            rowMap.put("formatted_address", (String) geo.get("formatted_address"));
-                            rowMap.put("status", "success");
-                        } else {
-                            String fallback = address;
-                            if (country != null && !country.isEmpty()) {
-                                if (!fallback.isEmpty()) fallback += ", ";
-                                fallback += country.trim();
-                            }
-                            fallback = fallback.trim();
-                            if (!fallback.isEmpty() && !fallback.equals(finalQuery)) {
-                                System.out.println("Fallback query: " + fallback);
-                                geo = geocode(fallback, null);
-                                if ("success".equals(geo.get("status"))) {
-                                    rowMap.put("lat", (String) geo.get("lat"));
-                                    rowMap.put("lng", (String) geo.get("lng"));
-                                    rowMap.put("formatted_address", (String) geo.get("formatted_address"));
-                                    rowMap.put("status", "success");
-                                } else {
-                                    rowMap.put("status", "error");
-                                    rowMap.put("message", (String) geo.get("message"));
-                                }
+                        fallback = fallback.trim();
+                        if (!fallback.isEmpty() && !fallback.equals(finalQuery)) {
+                            System.out.println("Fallback query: " + fallback);
+                            geo = geocode(fallback, null);
+                            if ("success".equals(geo.get("status"))) {
+                                rowMap.put("lat", (String) geo.get("lat"));
+                                rowMap.put("lng", (String) geo.get("lng"));
+                                rowMap.put("formatted_address", (String) geo.get("formatted_address"));
+                                rowMap.put("status", "success");
                             } else {
                                 rowMap.put("status", "error");
                                 rowMap.put("message", (String) geo.get("message"));
                             }
+                        } else {
+                            rowMap.put("status", "error");
+                            rowMap.put("message", (String) geo.get("message"));
                         }
                     }
-                    fullResults.add(rowMap);
                 }
-
-                System.out.println("=== DEBUG: Skipped " + skippedData + " data comment/blank lines during processing");
+                fullResults.add(rowMap);
             }
 
-            // Build CSV results
-            StringBuilder csvResults = new StringBuilder();
-            csvResults.append("address,lat,lng,formatted_address,status,message\n");
-            for (Map<String, String> row : fullResults) {
-                csvResults.append(String.format("\"%s\",\"%s\",\"%s\",\"%s\",\"%s\",\"%s\"\n",
-                    row.getOrDefault("address", ""),
-                    row.getOrDefault("lat", ""),
-                    row.getOrDefault("lng", ""),
-                    row.getOrDefault("formatted_address", ""),
-                    row.getOrDefault("status", ""),
-                    row.getOrDefault("message", "")));
-            }
+            System.out.println("=== DEBUG: Skipped " + skippedData + " data comment/blank lines during processing");
+        }
 
-            PreparedStatement updateBatch = conn.prepareStatement("UPDATE batches SET status = 'complete', results = ? WHERE id = ?");
-            updateBatch.setString(1, csvResults.toString());
-            updateBatch.setInt(2, batchId);
-            updateBatch.executeUpdate();
+        // Build CSV results
+        StringBuilder csvResults = new StringBuilder();
+        csvResults.append("address,lat,lng,formatted_address,status,message\n");
+        for (Map<String, String> row : fullResults) {
+            csvResults.append(String.format("\"%s\",\"%s\",\"%s\",\"%s\",\"%s\",\"%s\"\n",
+                row.getOrDefault("address", ""),
+                row.getOrDefault("lat", ""),
+                row.getOrDefault("lng", ""),
+                row.getOrDefault("formatted_address", ""),
+                row.getOrDefault("status", ""),
+                row.getOrDefault("message", "")));
+        }
 
-            List<Map<String, String>> preview = fullResults.subList(0, Math.min(50, fullResults.size()));
+        PreparedStatement updateBatch = conn.prepareStatement("UPDATE batches SET status = 'complete', results = ? WHERE id = ?");
+        updateBatch.setString(1, csvResults.toString());
+        updateBatch.setInt(2, batchId);
+        updateBatch.executeUpdate();
 
-            response.put("status", "success");
-            response.put("batchId", batchId);
-            response.put("preview", preview);
-            response.put("totalRows", fullResults.size());
-            response.put("message", "Batch processed");
+        List<Map<String, String>> preview = fullResults.subList(0, Math.min(50, fullResults.size()));
 
-            return ResponseEntity.ok(response);
-        } catch (Exception e) {
-            e.printStackTrace();
-            response.put("status", "error");
-            response.put("message", "Batch processing failed—try again: " + e.getMessage());
-            return ResponseEntity.status(500).body(response);
+        response.put("status", "success");
+        response.put("batchId", batchId);
+        response.put("preview", preview);
+        response.put("totalRows", fullResults.size());
+        response.put("message", "Batch processed");
+
+        return ResponseEntity.ok(response);
+    } catch (Exception e) {
+        e.printStackTrace();
+        response.put("status", "error");
+        response.put("message", "Batch processing failed—try again: " + e.getMessage());
+        return ResponseEntity.status(500).body(response);
+    }
+}
+
+private boolean allColumnsEmpty(String[] line) {
+    for (String col : line) {
+        if (col != null && !col.trim().isEmpty()) {
+            return false;
         }
     }
-
-    private boolean allColumnsEmpty(String[] line) {
-        for (String col : line) {
-            if (col != null && !col.trim().isEmpty()) {
-                return false;
-            }
-        }
-        return true;
-    }
+    return true;
+}
 
     @GetMapping("/batches")
     public ResponseEntity<List<Map<String, Object>>> getBatches(@RequestParam("email") String email) {

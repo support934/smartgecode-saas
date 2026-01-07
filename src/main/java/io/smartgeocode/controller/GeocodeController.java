@@ -130,7 +130,7 @@ public class GeocodeController {
             System.out.println("=== GEOCODE HIT: param = " + finalAddr + " at " + new Date());
 
             String encodedAddr = finalAddr.replace(" ", "+").replace(",", "%2C");
-            String yourEmail = "sumeet.vasu@gmail.com";
+            String yourEmail = System.getenv("NOMINATIM_EMAIL") != null ? System.getenv("NOMINATIM_EMAIL") : "sumeet.vasu@gmail.com";
             String url = "https://nominatim.openstreetmap.org/search?format=json&email=" + yourEmail + "&q=" + encodedAddr + "&limit=1";
 
             var request = HttpRequest.newBuilder()
@@ -425,31 +425,44 @@ public class GeocodeController {
         }
     }
 
-    @PostMapping("/stripe-webhook")
-    public ResponseEntity<String> stripeWebhook(@RequestBody String payload, @RequestHeader("Stripe-Signature") String sigHeader) {
-      String webhookSecret = System.getenv("STRIPE_WEBHOOK_SECRET");
-      try {
-        Event event = Webhook.constructEvent(payload, sigHeader, webhookSecret);
+@PostMapping("/stripe-webhook")
+public ResponseEntity<String> stripeWebhook(@RequestBody String payload, @RequestHeader("Stripe-Signature") String sigHeader) {
+  String webhookSecret = System.getenv("STRIPE_WEBHOOK_SECRET");
+  try {
+    // Construct event FIRST - this verifies signature and parses payload
+    Event event = Webhook.constructEvent(payload, sigHeader, webhookSecret);
 
-        if ("customer.subscription.deleted".equals(event.getType())) {
-          Subscription subscription = (Subscription) event.getDataObjectDeserializer().getObject().get();
-          String customerId = subscription.getCustomer();
-          // Update DB
-          try (Connection conn = dataSource.getConnection()) {
-            PreparedStatement stmt = conn.prepareStatement("UPDATE users SET subscription_status = 'canceled' WHERE stripe_customer_id = ?");
-            stmt.setString(1, customerId);
-            stmt.executeUpdate();
-          }
-        }
-
-        return ResponseEntity.ok("Webhook received");
-      } catch (SignatureVerificationException e) {
-        return ResponseEntity.status(400).body("Webhook signature invalid");
-      } catch (Exception e) {
-        System.err.println("Webhook error: " + e.getMessage());
-        return ResponseEntity.status(500).body("Webhook failed");
+    // Now handle events
+    if ("customer.subscription.created".equals(event.getType())) {
+      Subscription subscription = (Subscription) event.getDataObjectDeserializer().getObject().get();
+      String customerId = subscription.getCustomer();
+      try (Connection conn = dataSource.getConnection()) {
+        PreparedStatement stmt = conn.prepareStatement(
+          "UPDATE users SET subscription_status = 'premium', stripe_customer_id = ? " +
+          "WHERE stripe_customer_id IS NULL OR stripe_customer_id = ?"
+        );
+        stmt.setString(1, customerId);
+        stmt.setString(2, customerId);
+        stmt.executeUpdate();
+      }
+    } else if ("customer.subscription.deleted".equals(event.getType())) {
+      Subscription subscription = (Subscription) event.getDataObjectDeserializer().getObject().get();
+      String customerId = subscription.getCustomer();
+      try (Connection conn = dataSource.getConnection()) {
+        PreparedStatement stmt = conn.prepareStatement("UPDATE users SET subscription_status = 'canceled' WHERE stripe_customer_id = ?");
+        stmt.setString(1, customerId);
+        stmt.executeUpdate();
       }
     }
+
+    return ResponseEntity.ok("Webhook received");
+  } catch (SignatureVerificationException e) {
+    return ResponseEntity.status(400).body("Webhook signature invalid");
+  } catch (Exception e) {
+    System.err.println("Webhook error: " + e.getMessage());
+    return ResponseEntity.status(500).body("Webhook failed");
+  }
+}
 
     private static class PremiumRequest {
         private String email;

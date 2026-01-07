@@ -546,7 +546,7 @@ public ResponseEntity<Map<String, Object>> batchGeocode(@RequestParam("file") Mu
         }
 
         List<Map<String, String>> fullResults = new ArrayList<>();
-        System.out.println("=== DEBUG: NEW COMMENT-SKIP VERSION LIVE - 2025-12-30 ===");
+        System.out.println("=== DEBUG: IMPROVED LANDMARK + COUNTRY FALLBACK - 2026-01-07 ===");
         try (CSVReader csvReader = new CSVReader(new InputStreamReader(file.getInputStream()))) {
             String[] headers = null;
             String[] line;
@@ -604,7 +604,7 @@ public ResponseEntity<Map<String, Object>> batchGeocode(@RequestParam("file") Mu
                     rowMap.put(header, line.length > i ? line[i].trim() : "");
                 }
 
-                // Build clean query (landmark/name first - correct priority)
+                // Build primary query (landmark/name first - correct priority)
                 StringBuilder query = new StringBuilder();
 
                 String name = rowMap.get("name");
@@ -651,7 +651,7 @@ public ResponseEntity<Map<String, Object>> batchGeocode(@RequestParam("file") Mu
                         finalQuery = finalQuery.substring(0, 80);
                     }
 
-                    System.out.println("Sending query to Nominatim: " + finalQuery);
+                    System.out.println("Sending primary query to Nominatim: " + finalQuery);
 
                     Map<String, Object> geo = geocode(finalQuery, null);
                     if ("success".equals(geo.get("status"))) {
@@ -660,15 +660,22 @@ public ResponseEntity<Map<String, Object>> batchGeocode(@RequestParam("file") Mu
                         rowMap.put("formatted_address", (String) geo.get("formatted_address"));
                         rowMap.put("status", "success");
                     } else {
-                        // Improved fallback: always try landmark + country if available
-                        String fallback = name != null && !name.isEmpty() ? name.trim() : address;
+                        // Improved fallback: always try name + country if name exists and country available
+                        String fallback = "";
+                        if (name != null && !name.isEmpty()) {
+                            fallback = name.trim();
+                        } else if (address != null && !address.isEmpty()) {
+                            fallback = address.trim();
+                        }
+
                         if (country != null && !country.isEmpty()) {
                             if (!fallback.isEmpty()) fallback += ", ";
                             fallback += country.trim();
                         }
                         fallback = fallback.trim();
+
                         if (!fallback.isEmpty() && !fallback.equals(finalQuery)) {
-                            System.out.println("Fallback query: " + fallback);
+                            System.out.println("Sending fallback query: " + fallback);
                             geo = geocode(fallback, null);
                             if ("success".equals(geo.get("status"))) {
                                 rowMap.put("lat", (String) geo.get("lat"));
@@ -734,7 +741,6 @@ private boolean allColumnsEmpty(String[] line) {
     }
     return true;
 }
-
     @GetMapping("/batches")
     public ResponseEntity<List<Map<String, Object>>> getBatches(@RequestParam("email") String email) {
         List<Map<String, Object>> batches = new ArrayList<>();

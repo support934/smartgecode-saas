@@ -47,9 +47,10 @@ import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 
 import com.stripe.Stripe;
-import com.stripe.param.billingportal.SessionCreateParams;
-import com.stripe.model.billingportal.Session;
-import com.stripe.exception.StripeException;
+import com.stripe.param.billingportal.SessionCreateParams;  // Correct package
+import com.stripe.model.billingportal.Session;               // Correct package
+import com.stripe.exception.StripeException;                 // Optional but good for error handling
+
 import com.stripe.model.Event;
 import com.stripe.net.Webhook;
 import com.stripe.model.Subscription;
@@ -568,11 +569,11 @@ public class GeocodeController {
                 if (headers == null) {
                     System.out.println("DEBUG: No header row found after skipping all lines");
                     response.put("status", "error");
-                    response.put("message", "CSV is empty or has only comments/blank lines - no header row found");
+                    response.put("message", "CSV is empty or has only comments/blank lines - no header row");
                     return ResponseEntity.badRequest().body(response);
                 }
 
-                // Case-insensitive + trimmed header check for 'address'
+                // Case-insensitive check for 'address'
                 int addressIndex = -1;
                 for (int i = 0; i < headers.length; i++) {
                     String headerTrim = headers[i].trim().toLowerCase();
@@ -585,7 +586,7 @@ public class GeocodeController {
                 if (addressIndex == -1) {
                     System.out.println("DEBUG: Headers found but missing 'address' (case-insensitive): " + java.util.Arrays.toString(headers));
                     response.put("status", "error");
-                    response.put("message", "CSV must have an 'address' column (checked case-insensitively)");
+                    response.put("message", "CSV must have an 'address' column (case-insensitive check)");
                     return ResponseEntity.badRequest().body(response);
                 }
 
@@ -600,7 +601,7 @@ public class GeocodeController {
 
                     Map<String, String> rowMap = new HashMap<>();
                     for (int i = 0; i < headers.length; i++) {
-                        String header = headers[i].trim().toLowerCase();
+                        String header = headers[i].toLowerCase().trim();
                         rowMap.put(header, line.length > i ? line[i].trim() : "");
                     }
 
@@ -686,8 +687,6 @@ public class GeocodeController {
                     }
                     fullResults.add(rowMap);
                 }
-
-                System.out.println("=== DEBUG: Skipped " + skippedData + " data comment/blank lines during processing");
             }
 
             // Build CSV results
@@ -805,7 +804,7 @@ public class GeocodeController {
             }
             String customerId = rs.getString("stripe_customer_id");
 
-            // Correct Billing Portal session creation
+            // Correct Billing Portal session creation (current SDK structure)
             SessionCreateParams params = SessionCreateParams.builder()
                 .setCustomer(customerId)
                 .setReturnUrl("https://geocode-frontend.smartgeocode.io/dashboard")

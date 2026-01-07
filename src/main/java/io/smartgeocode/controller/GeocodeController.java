@@ -555,6 +555,7 @@ public ResponseEntity<Map<String, Object>> batchGeocode(@RequestParam("file") Mu
 
             // Phase 1: Skip leading comments/empty until header
             while ((line = csvReader.readNext()) != null) {
+                Thread.sleep(1000); // 1 second delay to avoid Nominatim rate limit (1 query/sec)
                 if (line.length == 0 || (line[0] != null && line[0].trim().startsWith("#")) || allColumnsEmpty(line)) {
                     skippedLeading++;
                     continue;

@@ -47,10 +47,9 @@ import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 
 import com.stripe.Stripe;
-import com.stripe.param.billingportal.SessionCreateParams;  // Correct package
-import com.stripe.model.billingportal.Session;               // Correct package
-import com.stripe.exception.StripeException;                 // Optional but good for error handling
-
+import com.stripe.param.billingportal.SessionCreateParams;
+import com.stripe.model.billingportal.Session;
+import com.stripe.exception.StripeException;
 import com.stripe.model.Event;
 import com.stripe.net.Webhook;
 import com.stripe.model.Subscription;
@@ -556,7 +555,7 @@ public class GeocodeController {
 
                 // Phase 1: Skip leading comments/empty until header
                 while ((line = csvReader.readNext()) != null) {
-                    if (line.length == 0 || (line[0] != null && line[0].trim().startsWith("#"))) {
+                    if (line.length == 0 || (line[0] != null && line[0].trim().startsWith("#")) || allColumnsEmpty(line)) {
                         skippedLeading++;
                         continue;
                     }
@@ -594,14 +593,14 @@ public class GeocodeController {
 
                 // Phase 2: Process data rows
                 while ((line = csvReader.readNext()) != null) {
-                    if (line.length == 0 || (line[0] != null && line[0].trim().startsWith("#"))) {
+                    if (line.length == 0 || (line[0] != null && line[0].trim().startsWith("#")) || allColumnsEmpty(line)) {
                         skippedData++;
                         continue;
                     }
 
                     Map<String, String> rowMap = new HashMap<>();
                     for (int i = 0; i < headers.length; i++) {
-                        String header = headers[i].toLowerCase().trim();
+                        String header = headers[i].trim().toLowerCase();
                         rowMap.put(header, line.length > i ? line[i].trim() : "");
                     }
 
@@ -687,6 +686,8 @@ public class GeocodeController {
                     }
                     fullResults.add(rowMap);
                 }
+
+                System.out.println("=== DEBUG: Skipped " + skippedData + " data comment/blank lines during processing");
             }
 
             // Build CSV results
@@ -722,6 +723,15 @@ public class GeocodeController {
             response.put("message", "Batch processing failed—try again: " + e.getMessage());
             return ResponseEntity.status(500).body(response);
         }
+    }
+
+    private boolean allColumnsEmpty(String[] line) {
+        for (String col : line) {
+            if (col != null && !col.trim().isEmpty()) {
+                return false;
+            }
+        }
+        return true;
     }
 
     @GetMapping("/batches")
@@ -804,7 +814,6 @@ public class GeocodeController {
             }
             String customerId = rs.getString("stripe_customer_id");
 
-            // Correct Billing Portal session creation (current SDK structure)
             SessionCreateParams params = SessionCreateParams.builder()
                 .setCustomer(customerId)
                 .setReturnUrl("https://geocode-frontend.smartgeocode.io/dashboard")
@@ -834,4 +843,5 @@ public class GeocodeController {
             return "Connection failed: " + e.getMessage();
         }
     }
+
 }

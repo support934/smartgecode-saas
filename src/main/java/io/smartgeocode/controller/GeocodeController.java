@@ -508,6 +508,7 @@ public ResponseEntity<String> stripeWebhook(@RequestBody String payload, @Reques
     public ResponseEntity<Map<String, Object>> getMe(@RequestParam("email") String email) {
         Map<String, Object> response = new HashMap<>();
         try (Connection conn = dataSource.getConnection()) {
+            email = email.toLowerCase().trim(); // Normalize to lowercase
             PreparedStatement stmt = conn.prepareStatement("SELECT subscription_status FROM users WHERE email = ?");
             stmt.setString(1, email);
             ResultSet rs = stmt.executeQuery();
@@ -523,7 +524,13 @@ public ResponseEntity<String> stripeWebhook(@RequestBody String payload, @Reques
     }
 
 @PostMapping(value = "/batch-geocode", consumes = "multipart/form-data")
-public ResponseEntity<Map<String, Object>> batchGeocode(@RequestParam("file") MultipartFile file, @RequestParam("email") String email) {
+public ResponseEntity<Map<String, Object>> batchGeocode(
+    @RequestParam("file") MultipartFile file,
+    @RequestParam("email") String email
+) {
+    // Normalize email immediately
+    email = email.toLowerCase().trim();
+
     Map<String, Object> response = new HashMap<>();
 
     if (file.isEmpty()) {
@@ -617,7 +624,7 @@ public ResponseEntity<Map<String, Object>> batchGeocode(@RequestParam("file") Mu
                     rowMap.put(header, line.length > i ? line[i].trim() : "");
                 }
 
-                // Build primary query (landmark/name first)
+                // Build clean query (name/landmark first for landmarks)
                 StringBuilder query = new StringBuilder();
 
                 String name = rowMap.get("name");
@@ -664,48 +671,36 @@ public ResponseEntity<Map<String, Object>> batchGeocode(@RequestParam("file") Mu
                         finalQuery = finalQuery.substring(0, 80);
                     }
 
-                    System.out.println("Sending primary query to Nominatim: " + finalQuery);
+                    System.out.println("Sending query to Nominatim: " + finalQuery);
 
                     Map<String, Object> geo = geocode(finalQuery, null);
-                    System.out.println("DEBUG: Geo response for primary: " + geo); // Log full geo response
-
                     if ("success".equals(geo.get("status"))) {
-                        rowMap.put("lat", (String) geo.getOrDefault("lat", ""));
-                        rowMap.put("lng", (String) geo.getOrDefault("lng", ""));
-                        rowMap.put("formatted_address", (String) geo.getOrDefault("formatted_address", ""));
+                        rowMap.put("lat", (String) geo.get("lat"));
+                        rowMap.put("lng", (String) geo.get("lng"));
+                        rowMap.put("formatted_address", (String) geo.get("formatted_address"));
                         rowMap.put("status", "success");
                     } else {
-                        // Fallback: name + country
-                        String fallback = "";
-                        if (name != null && !name.isEmpty()) {
-                            fallback = name.trim();
-                        } else if (address != null && !address.isEmpty()) {
-                            fallback = address.trim();
-                        }
-
+                        String fallback = address;
                         if (country != null && !country.isEmpty()) {
                             if (!fallback.isEmpty()) fallback += ", ";
                             fallback += country.trim();
                         }
                         fallback = fallback.trim();
-
                         if (!fallback.isEmpty() && !fallback.equals(finalQuery)) {
-                            System.out.println("Sending fallback query: " + fallback);
+                            System.out.println("Fallback query: " + fallback);
                             geo = geocode(fallback, null);
-                            System.out.println("DEBUG: Geo response for fallback: " + geo); // Log full fallback geo
-
                             if ("success".equals(geo.get("status"))) {
-                                rowMap.put("lat", (String) geo.getOrDefault("lat", ""));
-                                rowMap.put("lng", (String) geo.getOrDefault("lng", ""));
-                                rowMap.put("formatted_address", (String) geo.getOrDefault("formatted_address", ""));
+                                rowMap.put("lat", (String) geo.get("lat"));
+                                rowMap.put("lng", (String) geo.get("lng"));
+                                rowMap.put("formatted_address", (String) geo.get("formatted_address"));
                                 rowMap.put("status", "success");
                             } else {
                                 rowMap.put("status", "error");
-                                rowMap.put("message", (String) geo.getOrDefault("message", "Geocode failed"));
+                                rowMap.put("message", (String) geo.get("message"));
                             }
                         } else {
                             rowMap.put("status", "error");
-                            rowMap.put("message", (String) geo.getOrDefault("message", "Geocode failed"));
+                            rowMap.put("message", (String) geo.get("message"));
                         }
                     }
                 }

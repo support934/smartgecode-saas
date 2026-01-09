@@ -822,7 +822,7 @@ private boolean allColumnsEmpty(String[] line) {
 public ResponseEntity<Map<String, Object>> createPortalSession(@RequestBody Map<String, String> payload) {
   Map<String, Object> response = new HashMap<>();
   System.out.println("=== DEBUG: Portal session request received: " + payload); // Debug entry
-
+  //Stripe.apiKey = System.getenv("STRIPE_SECRET_KEY");
   String email = payload.get("email");
   if (email == null) {
     System.out.println("DEBUG: No email in payload");
@@ -867,7 +867,15 @@ public ResponseEntity<Map<String, Object>> createPortalSession(@RequestBody Map<
     return ResponseEntity.status(500).body(response);
   }
 }
-
+static {
+    String stripeKey = System.getenv("STRIPE_SECRET_KEY");
+    if (stripeKey == null || stripeKey.isEmpty()) {
+        System.err.println("FATAL ERROR: STRIPE_SECRET_KEY is not set in environment variables!");
+    } else {
+        Stripe.apiKey = stripeKey;
+        System.out.println("Stripe API key successfully loaded from environment");
+    }
+}
     @GetMapping("/test-db")
     public String testDbConnection() {
         try (Connection conn = dataSource.getConnection()) {

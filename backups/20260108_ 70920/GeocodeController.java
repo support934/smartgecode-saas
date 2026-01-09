@@ -818,55 +818,40 @@ private boolean allColumnsEmpty(String[] line) {
         }
     }
 
-@PostMapping("/create-portal-session")
-public ResponseEntity<Map<String, Object>> createPortalSession(@RequestBody Map<String, String> payload) {
-  Map<String, Object> response = new HashMap<>();
-  System.out.println("=== DEBUG: Portal session request received: " + payload); // Debug entry
+    @PostMapping("/create-portal-session")
+    public ResponseEntity<Map<String, Object>> createPortalSession(@RequestBody Map<String, String> payload) {
+        Map<String, Object> response = new HashMap<>();
+        try {
+            String email = payload.get("email");
+            Connection conn = dataSource.getConnection();
+            PreparedStatement stmt = conn.prepareStatement("SELECT stripe_customer_id FROM users WHERE email = ?");
+            stmt.setString(1, email);
+            ResultSet rs = stmt.executeQuery();
+            if (!rs.next() || rs.getString("stripe_customer_id") == null) {
+                response.put("error", "No Stripe customer found");
+                return ResponseEntity.status(400).body(response);
+            }
+            String customerId = rs.getString("stripe_customer_id");
 
-  String email = payload.get("email");
-  if (email == null) {
-    System.out.println("DEBUG: No email in payload");
-    response.put("error", "Missing email");
-    return ResponseEntity.status(400).body(response);
-  }
+            SessionCreateParams params = SessionCreateParams.builder()
+                .setCustomer(customerId)
+                .setReturnUrl("https://geocode-frontend.smartgeocode.io/dashboard")
+                .build();
 
-  email = email.toLowerCase().trim();
-  System.out.println("DEBUG: Normalized email: " + email);
+            Session session = Session.create(params);
 
-  try (Connection conn = dataSource.getConnection()) {
-    PreparedStatement stmt = conn.prepareStatement("SELECT stripe_customer_id FROM users WHERE email = ?");
-    stmt.setString(1, email);
-    ResultSet rs = stmt.executeQuery();
-    if (!rs.next() || rs.getString("stripe_customer_id") == null) {
-      System.out.println("DEBUG: No customer ID found for email: " + email);
-      response.put("error", "No Stripe customer found");
-      return ResponseEntity.status(400).body(response);
+            response.put("url", session.getUrl());
+            return ResponseEntity.ok(response);
+        } catch (StripeException e) {
+            e.printStackTrace();
+            response.put("error", "Stripe error: " + e.getMessage());
+            return ResponseEntity.status(500).body(response);
+        } catch (Exception e) {
+            e.printStackTrace();
+            response.put("error", "Failed to create portal session");
+            return ResponseEntity.status(500).body(response);
+        }
     }
-    String customerId = rs.getString("stripe_customer_id");
-    System.out.println("DEBUG: Found customer ID: " + customerId);
-
-    SessionCreateParams params = SessionCreateParams.builder()
-        .setCustomer(customerId)
-        .setReturnUrl("https://geocode-frontend.smartgeocode.io/dashboard")
-        .build();
-
-    Session session = Session.create(params);
-    System.out.println("DEBUG: Portal URL generated: " + session.getUrl());
-
-    response.put("url", session.getUrl());
-    return ResponseEntity.ok(response);
-  } catch (StripeException e) {
-    System.err.println("DEBUG: Stripe error: " + e.getMessage());
-    e.printStackTrace();
-    response.put("error", "Stripe error: " + e.getMessage());
-    return ResponseEntity.status(500).body(response);
-  } catch (Exception e) {
-    System.err.println("DEBUG: General error: " + e.getMessage());
-    e.printStackTrace();
-    response.put("error", "Failed to create portal session");
-    return ResponseEntity.status(500).body(response);
-  }
-}
 
     @GetMapping("/test-db")
     public String testDbConnection() {

@@ -54,6 +54,7 @@ import com.stripe.model.Event;
 import com.stripe.net.Webhook;
 import com.stripe.model.Subscription;
 import com.stripe.exception.SignatureVerificationException;
+// No import for checkout SessionCreateParams and Session to avoid conflict - use qualified names
 
 @RestController
 @RequestMapping("/api")
@@ -68,7 +69,7 @@ public class GeocodeController {
 
     private final BCryptPasswordEncoder encoder = new BCryptPasswordEncoder();
 
-    private final String JWT_SECRET;
+    private String JWT_SECRET;
 
     {
         String envSecret = System.getenv("JWT_SECRET");
@@ -85,6 +86,22 @@ public class GeocodeController {
 
     public GeocodeController() {
         System.out.println("=== GeocodeController instantiated - /api/email and /api/geocode ready ===");
+    }
+
+    static {
+        String subKey = System.getenv("STRIPE_SUB_SECRET_KEY");
+        if (subKey == null || subKey.isEmpty()) {
+            System.err.println("FATAL ERROR: STRIPE_SUB_SECRET_KEY is not set in environment variables!");
+        } else {
+            System.out.println("Subscription/Portal key loaded");
+        }
+
+        String checkoutKey = System.getenv("STRIPE_CKOUT_SECRET_KEY");
+        if (checkoutKey == null || checkoutKey.isEmpty()) {
+            System.err.println("FATAL ERROR: STRIPE_CKOUT_SECRET_KEY is not set in environment variables!");
+        } else {
+            System.out.println("Checkout key loaded");
+        }
     }
 
     @PostConstruct
@@ -429,18 +446,13 @@ public class GeocodeController {
 public ResponseEntity<String> stripeWebhook(@RequestBody String payload, @RequestHeader("Stripe-Signature") String sigHeader) {
   String webhookSecret = System.getenv("STRIPE_WEBHOOK_SECRET");
   try {
-    // Construct event FIRST - this verifies signature and parses payload
     Event event = Webhook.constructEvent(payload, sigHeader, webhookSecret);
 
-    // Now handle events
     if ("customer.subscription.created".equals(event.getType())) {
       Subscription subscription = (Subscription) event.getDataObjectDeserializer().getObject().get();
       String customerId = subscription.getCustomer();
       try (Connection conn = dataSource.getConnection()) {
-        PreparedStatement stmt = conn.prepareStatement(
-          "UPDATE users SET subscription_status = 'premium', stripe_customer_id = ? " +
-          "WHERE stripe_customer_id IS NULL OR stripe_customer_id = ?"
-        );
+        PreparedStatement stmt = conn.prepareStatement("UPDATE users SET subscription_status = 'premium', stripe_customer_id = ? WHERE stripe_customer_id IS NULL OR stripe_customer_id = ?");
         stmt.setString(1, customerId);
         stmt.setString(2, customerId);
         stmt.executeUpdate();
@@ -508,7 +520,6 @@ public ResponseEntity<String> stripeWebhook(@RequestBody String payload, @Reques
     public ResponseEntity<Map<String, Object>> getMe(@RequestParam("email") String email) {
         Map<String, Object> response = new HashMap<>();
         try (Connection conn = dataSource.getConnection()) {
-            email = email.toLowerCase().trim(); // Normalize to lowercase
             PreparedStatement stmt = conn.prepareStatement("SELECT subscription_status FROM users WHERE email = ?");
             stmt.setString(1, email);
             ResultSet rs = stmt.executeQuery();
@@ -524,13 +535,7 @@ public ResponseEntity<String> stripeWebhook(@RequestBody String payload, @Reques
     }
 
 @PostMapping(value = "/batch-geocode", consumes = "multipart/form-data")
-public ResponseEntity<Map<String, Object>> batchGeocode(
-    @RequestParam("file") MultipartFile file,
-    @RequestParam("email") String email
-) {
-    // Normalize email immediately
-    email = email.toLowerCase().trim();
-
+public ResponseEntity<Map<String, Object>> batchGeocode(@RequestParam("file") MultipartFile file, @RequestParam("email") String email) {
     Map<String, Object> response = new HashMap<>();
 
     if (file.isEmpty()) {
@@ -624,7 +629,7 @@ public ResponseEntity<Map<String, Object>> batchGeocode(
                     rowMap.put(header, line.length > i ? line[i].trim() : "");
                 }
 
-                // Build clean query (name/landmark first for landmarks)
+                // Build clean query (landmark/name first for landmarks)
                 StringBuilder query = new StringBuilder();
 
                 String name = rowMap.get("name");
@@ -818,6 +823,41 @@ private boolean allColumnsEmpty(String[] line) {
         }
     }
 
+@PostMapping("/checkout")
+public ResponseEntity<Map<String, Object>> createCheckoutSession(@RequestBody Map<String, String> payload) {
+  Stripe.apiKey = System.getenv("STRIPE_CKOUT_SECRET_KEY"); // Use checkout-only key
+
+  String email = payload.get("email");
+  String address = payload.get("address");
+
+  if (email == null || address == null) {
+    return ResponseEntity.status(400).body(Map.of("error", "Missing email or address"));
+  }
+
+  try {
+    com.stripe.param.checkout.SessionCreateParams params = com.stripe.param.checkout.SessionCreateParams.builder()
+        .setMode(com.stripe.param.checkout.SessionCreateParams.Mode.SUBSCRIPTION)
+        .addPaymentMethodType(com.stripe.param.checkout.SessionCreateParams.PaymentMethodType.CARD)
+        .addLineItem(
+            com.stripe.param.checkout.SessionCreateParams.LineItem.builder()
+                .setPrice("price_1Sd8JxA5JR9NQZvD0GCmjm6R") // Your $29/mo price ID
+                .setQuantity(1L)
+                .build()
+        )
+        .setCustomerEmail(email)
+        .setSuccessUrl("https://geocode-frontend.smartgeocode.io/success?session_id={CHECKOUT_SESSION_ID}")
+        .setCancelUrl("https://geocode-frontend.smartgeocode.io?cancelled=true")
+        .putMetadata("address", address)
+        .build();
+
+    com.stripe.model.checkout.Session session = com.stripe.model.checkout.Session.create(params);
+
+    return ResponseEntity.ok(Map.of("url", session.getUrl()));
+  } catch (StripeException e) {
+    return ResponseEntity.status(500).body(Map.of("error", "Checkout failed: " + e.getMessage()));
+  }
+}
+
 @PostMapping("/create-portal-session")
 public ResponseEntity<Map<String, Object>> createPortalSession(@RequestBody Map<String, String> payload) {
   Map<String, Object> response = new HashMap<>();
@@ -866,15 +906,6 @@ public ResponseEntity<Map<String, Object>> createPortalSession(@RequestBody Map<
     response.put("error", "Failed to create portal session");
     return ResponseEntity.status(500).body(response);
   }
-}
-static {
-    String stripeKey = System.getenv("STRIPE_SECRET_KEY");
-    if (stripeKey == null || stripeKey.isEmpty()) {
-        System.err.println("FATAL ERROR: STRIPE_SECRET_KEY is not set in environment variables!");
-    } else {
-        Stripe.apiKey = stripeKey;
-        System.out.println("Stripe API key successfully loaded from environment");
-    }
 }
     @GetMapping("/test-db")
     public String testDbConnection() {

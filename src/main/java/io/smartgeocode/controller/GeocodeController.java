@@ -47,14 +47,13 @@ import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 
 import com.stripe.Stripe;
-import com.stripe.param.billingportal.SessionCreateParams;
-import com.stripe.model.billingportal.Session;
+import com.stripe.param.checkout.SessionCreateParams;
 import com.stripe.exception.StripeException;
 import com.stripe.model.Event;
 import com.stripe.net.Webhook;
 import com.stripe.model.Subscription;
 import com.stripe.exception.SignatureVerificationException;
-// No import for checkout SessionCreateParams and Session to avoid conflict - use qualified names
+import com.stripe.model.checkout.Session; // This is the correct class
 
 @RestController
 @RequestMapping("/api")
@@ -69,7 +68,7 @@ public class GeocodeController {
 
     private final BCryptPasswordEncoder encoder = new BCryptPasswordEncoder();
 
-    private String JWT_SECRET;
+    private final String JWT_SECRET;
 
     {
         String envSecret = System.getenv("JWT_SECRET");
@@ -90,20 +89,19 @@ public class GeocodeController {
 
     static {
         System.out.println("DEBUG: Static block executing - loading Stripe keys");
+
         String subKey = System.getenv("STRIPE_SUB_SECRET_KEY");
         if (subKey == null || subKey.isEmpty()) {
             System.err.println("FATAL ERROR: STRIPE_SUB_SECRET_KEY is not set in environment variables!");
         } else {
-            Stripe.apiKey = subKey;
-            System.out.println("Checkout key loaded successfully");
+            System.out.println("SUCCESS: STRIPE_SUB_SECRET_KEY is present (for portal/subscription management)");
         }
 
         String checkoutKey = System.getenv("STRIPE_CKOUT_SECRET_KEY");
         if (checkoutKey == null || checkoutKey.isEmpty()) {
             System.err.println("FATAL ERROR: STRIPE_CKOUT_SECRET_KEY is not set in environment variables!");
         } else {
-            Stripe.apiKey = checkoutKey;
-            System.out.println("Checkout key loaded");
+            System.out.println("SUCCESS: STRIPE_CKOUT_SECRET_KEY is present (for checkout)");
         }
     }
 
@@ -445,39 +443,39 @@ public class GeocodeController {
         }
     }
 
-@PostMapping("/stripe-webhook")
-public ResponseEntity<String> stripeWebhook(@RequestBody String payload, @RequestHeader("Stripe-Signature") String sigHeader) {
-  String webhookSecret = System.getenv("STRIPE_WEBHOOK_SECRET");
-  try {
-    Event event = Webhook.constructEvent(payload, sigHeader, webhookSecret);
+    @PostMapping("/stripe-webhook")
+    public ResponseEntity<String> stripeWebhook(@RequestBody String payload, @RequestHeader("Stripe-Signature") String sigHeader) {
+        String webhookSecret = System.getenv("STRIPE_WEBHOOK_SECRET");
+        try {
+            Event event = Webhook.constructEvent(payload, sigHeader, webhookSecret);
 
-    if ("customer.subscription.created".equals(event.getType())) {
-      Subscription subscription = (Subscription) event.getDataObjectDeserializer().getObject().get();
-      String customerId = subscription.getCustomer();
-      try (Connection conn = dataSource.getConnection()) {
-        PreparedStatement stmt = conn.prepareStatement("UPDATE users SET subscription_status = 'premium', stripe_customer_id = ? WHERE stripe_customer_id IS NULL OR stripe_customer_id = ?");
-        stmt.setString(1, customerId);
-        stmt.setString(2, customerId);
-        stmt.executeUpdate();
-      }
-    } else if ("customer.subscription.deleted".equals(event.getType())) {
-      Subscription subscription = (Subscription) event.getDataObjectDeserializer().getObject().get();
-      String customerId = subscription.getCustomer();
-      try (Connection conn = dataSource.getConnection()) {
-        PreparedStatement stmt = conn.prepareStatement("UPDATE users SET subscription_status = 'canceled' WHERE stripe_customer_id = ?");
-        stmt.setString(1, customerId);
-        stmt.executeUpdate();
-      }
+            if ("customer.subscription.created".equals(event.getType())) {
+                Subscription subscription = (Subscription) event.getDataObjectDeserializer().getObject().get();
+                String customerId = subscription.getCustomer();
+                try (Connection conn = dataSource.getConnection()) {
+                    PreparedStatement stmt = conn.prepareStatement("UPDATE users SET subscription_status = 'premium', stripe_customer_id = ? WHERE stripe_customer_id IS NULL OR stripe_customer_id = ?");
+                    stmt.setString(1, customerId);
+                    stmt.setString(2, customerId);
+                    stmt.executeUpdate();
+                }
+            } else if ("customer.subscription.deleted".equals(event.getType())) {
+                Subscription subscription = (Subscription) event.getDataObjectDeserializer().getObject().get();
+                String customerId = subscription.getCustomer();
+                try (Connection conn = dataSource.getConnection()) {
+                    PreparedStatement stmt = conn.prepareStatement("UPDATE users SET subscription_status = 'canceled' WHERE stripe_customer_id = ?");
+                    stmt.setString(1, customerId);
+                    stmt.executeUpdate();
+                }
+            }
+
+            return ResponseEntity.ok("Webhook received");
+        } catch (SignatureVerificationException e) {
+            return ResponseEntity.status(400).body("Webhook signature invalid");
+        } catch (Exception e) {
+            System.err.println("Webhook error: " + e.getMessage());
+            return ResponseEntity.status(500).body("Webhook failed");
+        }
     }
-
-    return ResponseEntity.ok("Webhook received");
-  } catch (SignatureVerificationException e) {
-    return ResponseEntity.status(400).body("Webhook signature invalid");
-  } catch (Exception e) {
-    System.err.println("Webhook error: " + e.getMessage());
-    return ResponseEntity.status(500).body("Webhook failed");
-  }
-}
 
     private static class PremiumRequest {
         private String email;
@@ -537,230 +535,231 @@ public ResponseEntity<String> stripeWebhook(@RequestBody String payload, @Reques
         }
     }
 
-@PostMapping(value = "/batch-geocode", consumes = "multipart/form-data")
-public ResponseEntity<Map<String, Object>> batchGeocode(@RequestParam("file") MultipartFile file, @RequestParam("email") String email) {
-    Map<String, Object> response = new HashMap<>();
+    @PostMapping(value = "/batch-geocode", consumes = "multipart/form-data")
+    public ResponseEntity<Map<String, Object>> batchGeocode(@RequestParam("file") MultipartFile file, @RequestParam("email") String email) {
+        Map<String, Object> response = new HashMap<>();
 
-    if (file.isEmpty()) {
-        response.put("status", "error");
-        response.put("message", "No file uploaded");
-        return ResponseEntity.badRequest().body(response);
-    }
-
-    try (Connection conn = dataSource.getConnection()) {
-        PreparedStatement userStmt = conn.prepareStatement("SELECT id, subscription_status FROM users WHERE email = ?");
-        userStmt.setString(1, email);
-        ResultSet rs = userStmt.executeQuery();
-        if (!rs.next()) {
+        if (file.isEmpty()) {
             response.put("status", "error");
-            response.put("message", "User not found");
-            return ResponseEntity.status(404).body(response);
-        }
-        int userId = rs.getInt("id");
-        String subscription = rs.getString("subscription_status");
-        if (!"premium".equals(subscription)) {
-            response.put("status", "error");
-            response.put("message", "Premium subscription required");
-            return ResponseEntity.status(403).body(response);
+            response.put("message", "No file uploaded");
+            return ResponseEntity.badRequest().body(response);
         }
 
-        int batchId = -1;
-        PreparedStatement batchStmt = conn.prepareStatement("INSERT INTO batches (user_id, status) VALUES (?, 'processing')", Statement.RETURN_GENERATED_KEYS);
-        batchStmt.setInt(1, userId);
-        batchStmt.executeUpdate();
-        ResultSet generatedKeys = batchStmt.getGeneratedKeys();
-        if (generatedKeys.next()) {
-            batchId = generatedKeys.getInt(1);
-        }
-
-        List<Map<String, String>> fullResults = new ArrayList<>();
-        System.out.println("=== DEBUG: NEW COMMENT-SKIP VERSION LIVE - 2025-12-30 ===");
-        try (CSVReader csvReader = new CSVReader(new InputStreamReader(file.getInputStream()))) {
-            String[] headers = null;
-            String[] line;
-            int skippedLeading = 0;
-            int skippedData = 0;
-
-            // Phase 1: Skip leading comments/empty until header
-            while ((line = csvReader.readNext()) != null) {
-                if (line.length == 0 || (line[0] != null && line[0].trim().startsWith("#")) || allColumnsEmpty(line)) {
-                    skippedLeading++;
-                    continue;
-                }
-                headers = line;
-                break;
-            }
-
-            System.out.println("DEBUG: Skipped " + skippedLeading + " leading comment/blank lines");
-
-            if (headers == null) {
-                System.out.println("DEBUG: No header row found after skipping all lines");
+        try (Connection conn = dataSource.getConnection()) {
+            PreparedStatement userStmt = conn.prepareStatement("SELECT id, subscription_status FROM users WHERE email = ?");
+            userStmt.setString(1, email);
+            ResultSet rs = userStmt.executeQuery();
+            if (!rs.next()) {
                 response.put("status", "error");
-                response.put("message", "CSV is empty or has only comments/blank lines - no header row");
-                return ResponseEntity.badRequest().body(response);
+                response.put("message", "User not found");
+                return ResponseEntity.status(404).body(response);
+            }
+            int userId = rs.getInt("id");
+            String subscription = rs.getString("subscription_status");
+            if (!"premium".equals(subscription)) {
+                response.put("status", "error");
+                response.put("message", "Premium subscription required");
+                return ResponseEntity.status(403).body(response);
             }
 
-            // Case-insensitive check for 'address'
-            int addressIndex = -1;
-            for (int i = 0; i < headers.length; i++) {
-                String headerTrim = headers[i].trim().toLowerCase();
-                if (headerTrim.equals("address")) {
-                    addressIndex = i;
+            int batchId = -1;
+            PreparedStatement batchStmt = conn.prepareStatement("INSERT INTO batches (user_id, status) VALUES (?, 'processing')", Statement.RETURN_GENERATED_KEYS);
+            batchStmt.setInt(1, userId);
+            batchStmt.executeUpdate();
+            ResultSet generatedKeys = batchStmt.getGeneratedKeys();
+            if (generatedKeys.next()) {
+                batchId = generatedKeys.getInt(1);
+            }
+
+            List<Map<String, String>> fullResults = new ArrayList<>();
+            System.out.println("=== DEBUG: NEW COMMENT-SKIP VERSION LIVE - 2025-12-30 ===");
+            try (CSVReader csvReader = new CSVReader(new InputStreamReader(file.getInputStream()))) {
+                String[] headers = null;
+                String[] line;
+                int skippedLeading = 0;
+                int skippedData = 0;
+
+                // Phase 1: Skip leading comments/empty until header
+                while ((line = csvReader.readNext()) != null) {
+                    if (line.length == 0 || (line[0] != null && line[0].trim().startsWith("#")) || allColumnsEmpty(line)) {
+                        skippedLeading++;
+                        continue;
+                    }
+                    headers = line;
                     break;
                 }
-            }
 
-            if (addressIndex == -1) {
-                System.out.println("DEBUG: Headers found but missing 'address' (case-insensitive): " + java.util.Arrays.toString(headers));
-                response.put("status", "error");
-                response.put("message", "CSV must have an 'address' column (case-insensitive check)");
-                return ResponseEntity.badRequest().body(response);
-            }
+                System.out.println("DEBUG: Skipped " + skippedLeading + " leading comment/blank lines");
 
-            System.out.println("DEBUG: Headers found with 'address' at index " + addressIndex + ": " + java.util.Arrays.toString(headers));
-
-            // Phase 2: Process data rows
-            while ((line = csvReader.readNext()) != null) {
-                if (line.length == 0 || (line[0] != null && line[0].trim().startsWith("#")) || allColumnsEmpty(line)) {
-                    skippedData++;
-                    continue;
+                if (headers == null) {
+                    System.out.println("DEBUG: No header row found after skipping all lines");
+                    response.put("status", "error");
+                    response.put("message", "CSV is empty or has only comments/blank lines - no header row");
+                    return ResponseEntity.badRequest().body(response);
                 }
 
-                Map<String, String> rowMap = new HashMap<>();
+                // Case-insensitive check for 'address'
+                int addressIndex = -1;
                 for (int i = 0; i < headers.length; i++) {
-                    String header = headers[i].trim().toLowerCase();
-                    rowMap.put(header, line.length > i ? line[i].trim() : "");
+                    String headerTrim = headers[i].trim().toLowerCase();
+                    if (headerTrim.equals("address")) {
+                        addressIndex = i;
+                        break;
+                    }
                 }
 
-                // Build clean query (landmark/name first for landmarks)
-                StringBuilder query = new StringBuilder();
-
-                String name = rowMap.get("name");
-                if (name != null && !name.isEmpty()) {
-                    query.append(name.trim());
+                if (addressIndex == -1) {
+                    System.out.println("DEBUG: Headers found but missing 'address' (case-insensitive): " + java.util.Arrays.toString(headers));
+                    response.put("status", "error");
+                    response.put("message", "CSV must have an 'address' column (case-insensitive check)");
+                    return ResponseEntity.badRequest().body(response);
                 }
 
-                String address = rowMap.get("address");
-                if (address != null && !address.isEmpty() && !address.equalsIgnoreCase("N/A")) {
-                    if (query.length() > 0) query.append(", ");
-                    query.append(address.trim());
-                }
+                System.out.println("DEBUG: Headers found with 'address' at index " + addressIndex + ": " + java.util.Arrays.toString(headers));
 
-                String city = rowMap.get("city");
-                if (city != null && !city.isEmpty()) {
-                    if (query.length() > 0) query.append(", ");
-                    query.append(city.trim());
-                }
-
-                String state = rowMap.get("state");
-                if (state != null && !state.isEmpty()) {
-                    if (query.length() > 0) query.append(", ");
-                    query.append(state.trim());
-                }
-
-                String zip = rowMap.get("zip");
-                if (zip != null && !zip.isEmpty()) {
-                    if (query.length() > 0) query.append(", ");
-                    query.append(zip.trim());
-                }
-
-                String country = rowMap.get("country");
-                if (country != null && !country.isEmpty()) {
-                    if (query.length() > 0) query.append(", ");
-                    query.append(country.trim());
-                }
-
-                String finalQuery = query.toString().trim();
-                if (finalQuery.isEmpty()) {
-                    rowMap.put("status", "skipped");
-                    rowMap.put("message", "Blank or N/A address");
-                } else {
-                    if (finalQuery.length() > 80) {
-                        finalQuery = finalQuery.substring(0, 80);
+                // Phase 2: Process data rows
+                while ((line = csvReader.readNext()) != null) {
+                    if (line.length == 0 || (line[0] != null && line[0].trim().startsWith("#")) || allColumnsEmpty(line)) {
+                        skippedData++;
+                        continue;
                     }
 
-                    System.out.println("Sending query to Nominatim: " + finalQuery);
+                    Map<String, String> rowMap = new HashMap<>();
+                    for (int i = 0; i < headers.length; i++) {
+                        String header = headers[i].trim().toLowerCase();
+                        rowMap.put(header, line.length > i ? line[i].trim() : "");
+                    }
 
-                    Map<String, Object> geo = geocode(finalQuery, null);
-                    if ("success".equals(geo.get("status"))) {
-                        rowMap.put("lat", (String) geo.get("lat"));
-                        rowMap.put("lng", (String) geo.get("lng"));
-                        rowMap.put("formatted_address", (String) geo.get("formatted_address"));
-                        rowMap.put("status", "success");
+                    // Build clean query (name/landmark first for landmarks)
+                    StringBuilder query = new StringBuilder();
+
+                    String name = rowMap.get("name");
+                    if (name != null && !name.isEmpty()) {
+                        query.append(name.trim());
+                    }
+
+                    String address = rowMap.get("address");
+                    if (address != null && !address.isEmpty() && !address.equalsIgnoreCase("N/A")) {
+                        if (query.length() > 0) query.append(", ");
+                        query.append(address.trim());
+                    }
+
+                    String city = rowMap.get("city");
+                    if (city != null && !city.isEmpty()) {
+                        if (query.length() > 0) query.append(", ");
+                        query.append(city.trim());
+                    }
+
+                    String state = rowMap.get("state");
+                    if (state != null && !state.isEmpty()) {
+                        if (query.length() > 0) query.append(", ");
+                        query.append(state.trim());
+                    }
+
+                    String zip = rowMap.get("zip");
+                    if (zip != null && !zip.isEmpty()) {
+                        if (query.length() > 0) query.append(", ");
+                        query.append(zip.trim());
+                    }
+
+                    String country = rowMap.get("country");
+                    if (country != null && !country.isEmpty()) {
+                        if (query.length() > 0) query.append(", ");
+                        query.append(country.trim());
+                    }
+
+                    String finalQuery = query.toString().trim();
+                    if (finalQuery.isEmpty()) {
+                        rowMap.put("status", "skipped");
+                        rowMap.put("message", "Blank or N/A address");
                     } else {
-                        String fallback = address;
-                        if (country != null && !country.isEmpty()) {
-                            if (!fallback.isEmpty()) fallback += ", ";
-                            fallback += country.trim();
+                        if (finalQuery.length() > 80) {
+                            finalQuery = finalQuery.substring(0, 80);
                         }
-                        fallback = fallback.trim();
-                        if (!fallback.isEmpty() && !fallback.equals(finalQuery)) {
-                            System.out.println("Fallback query: " + fallback);
-                            geo = geocode(fallback, null);
-                            if ("success".equals(geo.get("status"))) {
-                                rowMap.put("lat", (String) geo.get("lat"));
-                                rowMap.put("lng", (String) geo.get("lng"));
-                                rowMap.put("formatted_address", (String) geo.get("formatted_address"));
-                                rowMap.put("status", "success");
+
+                        System.out.println("Sending query to Nominatim: " + finalQuery);
+
+                        Map<String, Object> geo = geocode(finalQuery, null);
+                        if ("success".equals(geo.get("status"))) {
+                            rowMap.put("lat", (String) geo.get("lat"));
+                            rowMap.put("lng", (String) geo.get("lng"));
+                            rowMap.put("formatted_address", (String) geo.get("formatted_address"));
+                            rowMap.put("status", "success");
+                        } else {
+                            String fallback = address;
+                            if (country != null && !country.isEmpty()) {
+                                if (!fallback.isEmpty()) fallback += ", ";
+                                fallback += country.trim();
+                            }
+                            fallback = fallback.trim();
+                            if (!fallback.isEmpty() && !fallback.equals(finalQuery)) {
+                                System.out.println("Fallback query: " + fallback);
+                                geo = geocode(fallback, null);
+                                if ("success".equals(geo.get("status"))) {
+                                    rowMap.put("lat", (String) geo.get("lat"));
+                                    rowMap.put("lng", (String) geo.get("lng"));
+                                    rowMap.put("formatted_address", (String) geo.get("formatted_address"));
+                                    rowMap.put("status", "success");
+                                } else {
+                                    rowMap.put("status", "error");
+                                    rowMap.put("message", (String) geo.get("message"));
+                                }
                             } else {
                                 rowMap.put("status", "error");
                                 rowMap.put("message", (String) geo.get("message"));
                             }
-                        } else {
-                            rowMap.put("status", "error");
-                            rowMap.put("message", (String) geo.get("message"));
                         }
                     }
+                    fullResults.add(rowMap);
                 }
-                fullResults.add(rowMap);
+
+                System.out.println("=== DEBUG: Skipped " + skippedData + " data comment/blank lines during processing");
             }
 
-            System.out.println("=== DEBUG: Skipped " + skippedData + " data comment/blank lines during processing");
-        }
+            // Build CSV results
+            StringBuilder csvResults = new StringBuilder();
+            csvResults.append("address,lat,lng,formatted_address,status,message\n");
+            for (Map<String, String> row : fullResults) {
+                csvResults.append(String.format("\"%s\",\"%s\",\"%s\",\"%s\",\"%s\",\"%s\"\n",
+                    row.getOrDefault("address", ""),
+                    row.getOrDefault("lat", ""),
+                    row.getOrDefault("lng", ""),
+                    row.getOrDefault("formatted_address", ""),
+                    row.getOrDefault("status", ""),
+                    row.getOrDefault("message", "")));
+            }
 
-        // Build CSV results
-        StringBuilder csvResults = new StringBuilder();
-        csvResults.append("address,lat,lng,formatted_address,status,message\n");
-        for (Map<String, String> row : fullResults) {
-            csvResults.append(String.format("\"%s\",\"%s\",\"%s\",\"%s\",\"%s\",\"%s\"\n",
-                row.getOrDefault("address", ""),
-                row.getOrDefault("lat", ""),
-                row.getOrDefault("lng", ""),
-                row.getOrDefault("formatted_address", ""),
-                row.getOrDefault("status", ""),
-                row.getOrDefault("message", "")));
-        }
+            PreparedStatement updateBatch = conn.prepareStatement("UPDATE batches SET status = 'complete', results = ? WHERE id = ?");
+            updateBatch.setString(1, csvResults.toString());
+            updateBatch.setInt(2, batchId);
+            updateBatch.executeUpdate();
 
-        PreparedStatement updateBatch = conn.prepareStatement("UPDATE batches SET status = 'complete', results = ? WHERE id = ?");
-        updateBatch.setString(1, csvResults.toString());
-        updateBatch.setInt(2, batchId);
-        updateBatch.executeUpdate();
+            List<Map<String, String>> preview = fullResults.subList(0, Math.min(50, fullResults.size()));
 
-        List<Map<String, String>> preview = fullResults.subList(0, Math.min(50, fullResults.size()));
+            response.put("status", "success");
+            response.put("batchId", batchId);
+            response.put("preview", preview);
+            response.put("totalRows", fullResults.size());
+            response.put("message", "Batch processed");
 
-        response.put("status", "success");
-        response.put("batchId", batchId);
-        response.put("preview", preview);
-        response.put("totalRows", fullResults.size());
-        response.put("message", "Batch processed");
-
-        return ResponseEntity.ok(response);
-    } catch (Exception e) {
-        e.printStackTrace();
-        response.put("status", "error");
-        response.put("message", "Batch processing failed—try again: " + e.getMessage());
-        return ResponseEntity.status(500).body(response);
-    }
-}
-
-private boolean allColumnsEmpty(String[] line) {
-    for (String col : line) {
-        if (col != null && !col.trim().isEmpty()) {
-            return false;
+            return ResponseEntity.ok(response);
+        } catch (Exception e) {
+            e.printStackTrace();
+            response.put("status", "error");
+            response.put("message", "Batch processing failed—try again: " + e.getMessage());
+            return ResponseEntity.status(500).body(response);
         }
     }
-    return true;
-}
+
+    private boolean allColumnsEmpty(String[] line) {
+        for (String col : line) {
+            if (col != null && !col.trim().isEmpty()) {
+                return false;
+            }
+        }
+        return true;
+    }
+
     @GetMapping("/batches")
     public ResponseEntity<List<Map<String, Object>>> getBatches(@RequestParam("email") String email) {
         List<Map<String, Object>> batches = new ArrayList<>();
@@ -826,90 +825,119 @@ private boolean allColumnsEmpty(String[] line) {
         }
     }
 
-@PostMapping("/checkout")
-public ResponseEntity<Map<String, Object>> createCheckoutSession(@RequestBody Map<String, String> payload) {
-  Stripe.apiKey = System.getenv("STRIPE_CKOUT_SECRET_KEY"); // Use checkout-only key
+    @PostMapping("/checkout")
+    public ResponseEntity<Map<String, Object>> createCheckoutSession(@RequestBody Map<String, String> payload) {
+        Map<String, Object> response = new HashMap<>();
+        System.out.println("=== DEBUG: Checkout session request received: " + payload);
 
-  String email = payload.get("email");
-  String address = payload.get("address");
+        String checkoutKey = System.getenv("STRIPE_CKOUT_SECRET_KEY");
+        if (checkoutKey == null || checkoutKey.isEmpty()) {
+            System.err.println("FATAL ERROR: STRIPE_CKOUT_SECRET_KEY missing for checkout");
+            response.put("error", "Server configuration error");
+            return ResponseEntity.status(500).body(response);
+        }
+        Stripe.apiKey = checkoutKey;
+        System.out.println("DEBUG: Using STRIPE_CKOUT_SECRET_KEY for checkout session");
 
-  if (email == null || address == null) {
-    return ResponseEntity.status(400).body(Map.of("error", "Missing email or address"));
-  }
+        String email = payload.get("email");
+        String address = payload.get("address");
 
-  try {
-    com.stripe.param.checkout.SessionCreateParams params = com.stripe.param.checkout.SessionCreateParams.builder()
-        .setMode(com.stripe.param.checkout.SessionCreateParams.Mode.SUBSCRIPTION)
-        .addPaymentMethodType(com.stripe.param.checkout.SessionCreateParams.PaymentMethodType.CARD)
-        .addLineItem(
-            com.stripe.param.checkout.SessionCreateParams.LineItem.builder()
-                .setPrice("price_1Sd8JxA5JR9NQZvD0GCmjm6R") // Your $29/mo price ID
-                .setQuantity(1L)
-                .build()
-        )
-        .setCustomerEmail(email)
-        .setSuccessUrl("https://geocode-frontend.smartgeocode.io/success?session_id={CHECKOUT_SESSION_ID}")
-        .setCancelUrl("https://geocode-frontend.smartgeocode.io?cancelled=true")
-        .putMetadata("address", address)
-        .build();
+        if (email == null || address == null) {
+            response.put("error", "Missing email or address");
+            return ResponseEntity.status(400).body(response);
+        }
 
-    com.stripe.model.checkout.Session session = com.stripe.model.checkout.Session.create(params);
+        try {
+            com.stripe.param.checkout.SessionCreateParams params = com.stripe.param.checkout.SessionCreateParams.builder()
+                .setMode(com.stripe.param.checkout.SessionCreateParams.Mode.SUBSCRIPTION)
+                .addPaymentMethodType(com.stripe.param.checkout.SessionCreateParams.PaymentMethodType.CARD)
+                .addLineItem(
+                    com.stripe.param.checkout.SessionCreateParams.LineItem.builder()
+                        .setPrice("price_1Sd8JxA5JR9NQZvD0GCmjm6R")
+                        .setQuantity(1L)
+                        .build()
+                )
+                .setCustomerEmail(email)
+                .setSuccessUrl("https://geocode-frontend.smartgeocode.io/success?session_id={CHECKOUT_SESSION_ID}")
+                .setCancelUrl("https://geocode-frontend.smartgeocode.io?cancelled=true")
+                .putMetadata("address", address)
+                .build();
 
-    return ResponseEntity.ok(Map.of("url", session.getUrl()));
-  } catch (StripeException e) {
-    return ResponseEntity.status(500).body(Map.of("error", "Checkout failed: " + e.getMessage()));
-  }
-}
+            com.stripe.model.checkout.Session session = com.stripe.model.checkout.Session.create(params);
 
-@PostMapping("/create-portal-session")
-public ResponseEntity<Map<String, Object>> createPortalSession(@RequestBody Map<String, String> payload) {
-  Map<String, Object> response = new HashMap<>();
-  System.out.println("=== DEBUG: Portal session request received: " + payload); // Debug entry
-  //Stripe.apiKey = System.getenv("STRIPE_SECRET_KEY");
-  String email = payload.get("email");
-  if (email == null) {
-    System.out.println("DEBUG: No email in payload");
-    response.put("error", "Missing email");
-    return ResponseEntity.status(400).body(response);
-  }
-
-  email = email.toLowerCase().trim();
-  System.out.println("DEBUG: Normalized email: " + email);
-
-  try (Connection conn = dataSource.getConnection()) {
-    PreparedStatement stmt = conn.prepareStatement("SELECT stripe_customer_id FROM users WHERE email = ?");
-    stmt.setString(1, email);
-    ResultSet rs = stmt.executeQuery();
-    if (!rs.next() || rs.getString("stripe_customer_id") == null) {
-      System.out.println("DEBUG: No customer ID found for email: " + email);
-      response.put("error", "No Stripe customer found");
-      return ResponseEntity.status(400).body(response);
+            return ResponseEntity.ok(Map.of("url", session.getUrl()));
+        } catch (StripeException e) {
+            System.err.println("DEBUG: Checkout Stripe error: " + e.getMessage());
+            e.printStackTrace();
+            response.put("error", "Checkout failed: " + e.getMessage());
+            return ResponseEntity.status(500).body(response);
+        } catch (Exception e) {
+            System.err.println("DEBUG: General checkout error: " + e.getMessage());
+            e.printStackTrace();
+            response.put("error", "Failed to create checkout session");
+            return ResponseEntity.status(500).body(response);
+        }
     }
-    String customerId = rs.getString("stripe_customer_id");
-    System.out.println("DEBUG: Found customer ID: " + customerId);
 
-    SessionCreateParams params = SessionCreateParams.builder()
-        .setCustomer(customerId)
-        .setReturnUrl("https://geocode-frontend.smartgeocode.io/dashboard")
-        .build();
+    @PostMapping("/create-portal-session")
+    public ResponseEntity<Map<String, Object>> createPortalSession(@RequestBody Map<String, String> payload) {
+        Map<String, Object> response = new HashMap<>();
+        System.out.println("=== DEBUG: Portal session request received: " + payload);
 
-    Session session = Session.create(params);
-    System.out.println("DEBUG: Portal URL generated: " + session.getUrl());
+        String subKey = System.getenv("STRIPE_SUB_SECRET_KEY");
+        if (subKey == null || subKey.isEmpty()) {
+            System.err.println("FATAL ERROR: STRIPE_SUB_SECRET_KEY missing for portal");
+            response.put("error", "Server configuration error");
+            return ResponseEntity.status(500).body(response);
+        }
+        Stripe.apiKey = subKey;
+        System.out.println("DEBUG: Using STRIPE_SUB_SECRET_KEY for portal session");
 
-    response.put("url", session.getUrl());
-    return ResponseEntity.ok(response);
-  } catch (StripeException e) {
-    System.err.println("DEBUG: Stripe error: " + e.getMessage());
-    e.printStackTrace();
-    response.put("error", "Stripe error: " + e.getMessage());
-    return ResponseEntity.status(500).body(response);
-  } catch (Exception e) {
-    System.err.println("DEBUG: General error: " + e.getMessage());
-    e.printStackTrace();
-    response.put("error", "Failed to create portal session");
-    return ResponseEntity.status(500).body(response);
-  }
-}
+        String email = payload.get("email");
+        if (email == null) {
+            System.out.println("DEBUG: No email in payload");
+            response.put("error", "Missing email");
+            return ResponseEntity.status(400).body(response);
+        }
+
+        email = email.toLowerCase().trim();
+        System.out.println("DEBUG: Normalized email: " + email);
+
+        try (Connection conn = dataSource.getConnection()) {
+            PreparedStatement stmt = conn.prepareStatement("SELECT stripe_customer_id FROM users WHERE email = ?");
+            stmt.setString(1, email);
+            ResultSet rs = stmt.executeQuery();
+            if (!rs.next() || rs.getString("stripe_customer_id") == null) {
+                System.out.println("DEBUG: No customer ID found for email: " + email);
+                response.put("error", "No Stripe customer found");
+                return ResponseEntity.status(400).body(response);
+            }
+            String customerId = rs.getString("stripe_customer_id");
+            System.out.println("DEBUG: Found customer ID: " + customerId);
+
+            SessionCreateParams params = SessionCreateParams.builder()
+                .setCustomer(customerId)
+                .setReturnUrl("https://geocode-frontend.smartgeocode.io/dashboard")
+                .build();
+
+            Session session = Session.create(params);
+            System.out.println("DEBUG: Portal URL generated: " + session.getUrl());
+
+            response.put("url", session.getUrl());
+            return ResponseEntity.ok(response);
+        } catch (StripeException e) {
+            System.err.println("DEBUG: Stripe error: " + e.getMessage());
+            e.printStackTrace();
+            response.put("error", "Stripe error: " + e.getMessage());
+            return ResponseEntity.status(500).body(response);
+        } catch (Exception e) {
+            System.err.println("DEBUG: General error: " + e.getMessage());
+            e.printStackTrace();
+            response.put("error", "Failed to create portal session");
+            return ResponseEntity.status(500).body(response);
+        }
+    }
+
     @GetMapping("/test-db")
     public String testDbConnection() {
         try (Connection conn = dataSource.getConnection()) {

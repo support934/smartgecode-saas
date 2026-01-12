@@ -89,17 +89,20 @@ public class GeocodeController {
     }
 
     static {
+        System.out.println("DEBUG: Static block executing - loading Stripe keys");
         String subKey = System.getenv("STRIPE_SUB_SECRET_KEY");
         if (subKey == null || subKey.isEmpty()) {
             System.err.println("FATAL ERROR: STRIPE_SUB_SECRET_KEY is not set in environment variables!");
         } else {
-            System.out.println("Subscription/Portal key loaded");
+            Stripe.apiKey = subKey;
+            System.out.println("Checkout key loaded successfully");
         }
 
         String checkoutKey = System.getenv("STRIPE_CKOUT_SECRET_KEY");
         if (checkoutKey == null || checkoutKey.isEmpty()) {
             System.err.println("FATAL ERROR: STRIPE_CKOUT_SECRET_KEY is not set in environment variables!");
         } else {
+            Stripe.apiKey = checkoutKey;
             System.out.println("Checkout key loaded");
         }
     }

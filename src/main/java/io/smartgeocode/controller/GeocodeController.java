@@ -47,13 +47,14 @@ import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 
 import com.stripe.Stripe;
-import com.stripe.param.checkout.SessionCreateParams;
 import com.stripe.exception.StripeException;
 import com.stripe.model.Event;
 import com.stripe.net.Webhook;
 import com.stripe.model.Subscription;
 import com.stripe.exception.SignatureVerificationException;
-import com.stripe.model.checkout.Session; // This is the correct class
+
+// REMOVED AMBIGUOUS STRIPE IMPORTS TO PREVENT CONFLICTS
+// We will use fully qualified names (e.g. com.stripe.model.checkout.Session) inside the methods.
 
 @RestController
 @RequestMapping("/api")
@@ -848,6 +849,7 @@ public class GeocodeController {
         }
 
         try {
+            // ✅ EXPLICITLY USING CHECKOUT PARAMS
             com.stripe.param.checkout.SessionCreateParams params = com.stripe.param.checkout.SessionCreateParams.builder()
                 .setMode(com.stripe.param.checkout.SessionCreateParams.Mode.SUBSCRIPTION)
                 .addPaymentMethodType(com.stripe.param.checkout.SessionCreateParams.PaymentMethodType.CARD)
@@ -863,6 +865,7 @@ public class GeocodeController {
                 .putMetadata("address", address)
                 .build();
 
+            // ✅ EXPLICITLY USING CHECKOUT SESSION
             com.stripe.model.checkout.Session session = com.stripe.model.checkout.Session.create(params);
 
             return ResponseEntity.ok(Map.of("url", session.getUrl()));
@@ -915,13 +918,17 @@ public class GeocodeController {
             String customerId = rs.getString("stripe_customer_id");
             System.out.println("DEBUG: Found customer ID: " + customerId);
 
-            SessionCreateParams params = SessionCreateParams.builder()
+            // ✅ EXPLICITLY USING BILLING PORTAL PARAMS
+            com.stripe.param.billingportal.SessionCreateParams params = 
+                com.stripe.param.billingportal.SessionCreateParams.builder()
                 .setCustomer(customerId)
-                .setUiMode(SessionCreateParams.UiMode.EMBEDDED)
                 .setReturnUrl("https://geocode-frontend.smartgeocode.io/dashboard")
                 .build();
 
-            Session session = Session.create(params);
+            // ✅ EXPLICITLY USING BILLING PORTAL SESSION
+            com.stripe.model.billingportal.Session session = 
+                com.stripe.model.billingportal.Session.create(params);
+            
             System.out.println("DEBUG: Portal URL generated: " + session.getUrl());
 
             response.put("url", session.getUrl());

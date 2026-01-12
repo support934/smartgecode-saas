@@ -917,6 +917,7 @@ public class GeocodeController {
 
             SessionCreateParams params = SessionCreateParams.builder()
                 .setCustomer(customerId)
+                .setUiMode(SessionCreateParams.UiMode.EMBEDDED)
                 .setReturnUrl("https://geocode-frontend.smartgeocode.io/dashboard")
                 .build();
 

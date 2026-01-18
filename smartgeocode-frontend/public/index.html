@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Smartgeocode – Fast Geocoding for Businesses</title>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; line-height: 1.6; color: #333; background: white; }
+    .header { background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%); color: white; padding: 1rem 2rem; display: flex; justify-content: space-between; align-items: center; }
+    .header h1 { font-size: 1.5rem; font-weight: bold; }
+    .header a { background: white; color: #ef4444; padding: 0.5rem 1rem; text-decoration: none; border-radius: 0.5rem; font-weight: bold; transition: background 0.3s; }
+    .header a:hover { background: #f3f4f6; }
+    .hero { background: linear-gradient(135deg, #fef2f2 0%, #fee2e2 100%); color: #333; padding: 80px 20px; text-align: center; } /* Reduced padding for quicker gist */
+    .hero h1 { font-size: 2.5em; margin-bottom: 10px; color: #ef4444; }
+    .hero p { font-size: 1.2em; margin-bottom: 20px; }
+    .cta { background: #ef4444; color: white; padding: 12px 30px; text-decoration: none; border-radius: 50px; font-size: 1em; font-weight: bold; display: inline-block; transition: transform 0.3s; }
+    .cta:hover { transform: translateY(-3px); }
+    .features { padding: 60px 20px; background: #f8f9fa; }
+    .features h2 { text-align: center; font-size: 2em; margin-bottom: 40px; color: #ef4444; }
+    .pricing { padding: 60px 20px; background: white; }
+    .pricing h2 { text-align: center; font-size: 2em; margin-bottom: 40px; color: #ef4444; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 20px; max-width: 1200px; margin: 0 auto; } /* Smaller minmax for compactness */
+    .card { background: white; padding: 20px; border-radius: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); text-align: center; transition: transform 0.3s; } /* Reduced padding */
+    .card:hover { transform: translateY(-5px); }
+    .card i { font-size: 2.5em; color: #ef4444; margin-bottom: 15px; }
+    .card h3 { font-size: 1.3em; margin-bottom: 8px; color: #333; }
+    .card p { color: #666; font-size: 0.9em; }
+    .price-card { border: 1px solid #ddd; }
+    .price-card.popular { border-color: #ef4444; position: relative; }
+    .price-card.popular::before { content: 'Most Popular'; position: absolute; top: -12px; left: 50%; transform: translateX(-50%); background: #ef4444; color: white; padding: 4px 12px; border-radius: 20px; font-size: 0.7em; font-weight: bold; }
+    .price-card .price { font-size: 1.8em; font-weight: bold; color: #ef4444; margin: 8px 0; }
+    .price-card ul { list-style: none; margin-bottom: 15px; font-size: 0.9em; }
+    .price-card ul li { margin: 4px 0; color: #666; }
+    .price-card ul li.strike { text-decoration: line-through; color: #aaa; }
+    .price-card a { background: #ef4444; color: white; padding: 8px 18px; text-decoration: none; border-radius: 5px; font-weight: bold; display: block; transition: background 0.3s; font-size: 0.9em; }
+    .price-card a:hover { background: #dc2626; }
+    @media (max-width: 768px) { .hero h1 { font-size: 2em; } .grid { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+  <!-- Header and Hero unchanged -->
+  <header class="header">
+    <h1>Smartgeocode</h1>
+    <a href="/success">Log In</a>
+  </header>
+  <section class="hero">
+    <h1>Accurate Geocoding, Made Simple</h1>
+    <p>Get precise latitude/longitude coordinates instantly. Free for single lookups—upgrade for batch processing from $29/mo. Ideal for real estate, logistics, marketing, and app development.</p>
+    <a href="/" class="cta">Start Free Trial</a>
+  </section>
+  <!-- Pricing moved up here -->
+  <section class="pricing">
+    <h2>Flexible Plans for Every Need</h2>
+    <div class="grid">
+      <div class="card price-card">
+        <h3>Free</h3>
+        <p class="price">$0/mo</p>
+        <ul>
+          <li>Manual single-address lookups</li>
+          <li>Up to 500 lookups per month</li>
+          <li>Precise lat/long + formatted address</li>
+          <li>Instant email delivery of results</li>
+          <li class="strike">Batch CSV processing</li>
+          <li class="strike">API integration</li>
+        </ul>
+        <a href="/">Get Started Free</a>
+      </div>
+      <div class="card price-card popular">
+        <h3>Premium</h3>
+        <p class="price">$29/mo</p>
+        <ul>
+          <li>Batch upload via CSV</li>
+          <li>Up to 10,000 lookups per month</li>
+          <li>Exports to CSV, JSON, KML for Google Maps</li>
+          <li>No watermarks, priority processing</li>
+          <li>Unlimited singles within monthly limit</li>
+          <li class="strike">API access</li>
+        </ul>
+        <a href="/">Upgrade to Premium</a>
+      </div>
+      <div class="card price-card">
+        <h3>Pro</h3>
+        <p class="price">$49/mo</p>
+        <ul>
+          <li>Up to 50,000 lookups per month</li>
+          <li>Full API access for real-time and batch</li>
+          <li>Increased rate limits</li>
+          <li>All Premium features included</li>
+        </ul>
+        <a href="mailto:support@smartgeocode.io?subject=Interest%20in%20SmartGeocode%20Pro%20Plan&body=Hello%20team%2C%0A%0AI%27m%20interested%20in%20the%20Pro%20plan.%20My%20use%20case%20is%3A%20[describe%20briefly%2C%20e.g.%20integrating%20into%20my%20app].%0AExpected%20monthly%20volume%3A%20[estimate].%0A%0ALooking%20forward%20to%20details!%0A%0ABest%2C%0A[Your%20Name]">Contact for Pro</a>
+      </div>
+      <div class="card price-card">
+        <h3>Unlimited</h3>
+        <p class="price">Contact Us</p>
+        <ul>
+          <li>Unlimited lookups with fair use policy</li>
+          <li>Scalable API for high-volume needs</li>
+          <li>Dedicated support and custom options</li>
+        </ul>
+        <a href="mailto:support@smartgeocode.io?subject=SmartGeocode%20Unlimited%20Plan%20Inquiry&body=Hello%20team%2C%0A%0AI%27d%20like%20to%20discuss%20the%20Unlimited%20plan.%20Details%3A%0A-%20Expected%20monthly%20lookups%3A%20[estimate%2C%20e.g.%20100k%2B]%0A-%20Use%20case%3A%20[real%20estate%2C%20logistics%2C%20etc.]%0A-%20Specific%20requirements%3A%20[API%2C%20SLAs%2C%20etc.]%0A%0APlease%20provide%20pricing%20and%20next%20steps.%0A%0AThanks%2C%0A[Your%20Name]">Contact for Unlimited</a>
+      </div>
+    </div>
+  </section>
+  <!-- Features at bottom -->
+  <section class="features">
+    <h2>Why Smartgeocode?</h2>
+    <div class="grid">
+      <div class="card">
+        <i class="fas fa-bolt"></i>
+        <h3>Blazing Fast</h3>
+        <p>Get accurate coordinates in seconds, powered by reliable APIs.</p>
+      </div>
+      <div class="card">
+        <i class="fas fa-envelope-open"></i>
+        <h3>Instant Email Delivery</h3>
+        <p>Results sent to your inbox for easy access and sharing—every time.</p>
+      </div>
+      <div class="card">
+        <i class="fas fa-rocket"></i>
+        <h3>Effortless Scaling</h3>
+        <p>Start free, upgrade seamlessly for batch, API, or unlimited access.</p>
+      </div>
+    </div>
+  </section>
+</body>
+</html>

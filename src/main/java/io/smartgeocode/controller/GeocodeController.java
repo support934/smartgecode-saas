@@ -539,15 +539,47 @@ public class GeocodeController {
         return ResponseEntity.ok(lookupService.getUsage(userId));
     }
 
+// ... inside GeocodeController.java ...
+
+    // UPDATED: Captures "Leads" into the DB automatically
     @PostMapping("/email")
     public ResponseEntity<String> sendEmail(@RequestBody Map<String, Object> payload) {
         String email = (String) payload.get("email");
         String address = (String) payload.get("address");
         Map<String, Object> result = (Map<String, Object>) payload.get("result");
         
+        if (email == null || address == null) return ResponseEntity.badRequest().body("Missing data");
+
+        // 1. Capture the Lead (Shadow Account)
+        try (Connection conn = dataSource.getConnection()) {
+            PreparedStatement check = conn.prepareStatement("SELECT id FROM users WHERE email = ?");
+            check.setString(1, email);
+            if (!check.executeQuery().next()) {
+                // User doesn't exist -> Create "Lead" account
+                String randomPass = UUID.randomUUID().toString(); // Placeholder password
+                PreparedStatement insert = conn.prepareStatement("INSERT INTO users (email, password_hash, subscription_status) VALUES (?, ?, 'lead')");
+                insert.setString(1, email);
+                insert.setString(2, encoder.encode(randomPass));
+                insert.executeUpdate();
+                System.out.println("New Lead Captured: " + email);
+            }
+        } catch (Exception e) {
+            e.printStackTrace(); // Log but don't fail the email send
+        }
+
+        // 2. Send the Email with "Claim Account" Link
+        // We direct them to "Forgot Password" flow effectively, so they can set a password
+        String claimLink = "https://geocode-frontend.smartgeocode.io/forgot-password?email=" + email;
+        
         Email from = new Email("noreply@smartgeocode.io");
         Email to = new Email(email);
-        Content content = new Content("text/plain", "Address: " + address + "\nLat: " + result.get("lat") + "\nLng: " + result.get("lng") + "\nUpgrade: https://geocode-frontend.smartgeocode.io/upgrade");
+        Content content = new Content("text/plain", 
+            "Here are your results for: " + address + "\n\n" +
+            "Lat: " + result.get("lat") + "\n" +
+            "Lng: " + result.get("lng") + "\n\n" +
+            "You have a free account waiting! Claim it here to batch process 500 more addresses:\n" + 
+            claimLink
+        );
         Mail mail = new Mail(from, "Your Geocode Results", to, content);
         
         try {

@@ -33,6 +33,7 @@ import java.util.Random;
 import java.util.UUID;
 import java.nio.charset.StandardCharsets;
 import jakarta.annotation.PostConstruct;
+import io.smartgeocode.service.LookupService;
 
 import com.sendgrid.SendGrid;
 import com.sendgrid.Method;
@@ -53,9 +54,6 @@ import com.stripe.net.Webhook;
 import com.stripe.model.Subscription;
 import com.stripe.exception.SignatureVerificationException;
 
-// REMOVED AMBIGUOUS STRIPE IMPORTS TO PREVENT CONFLICTS
-// We will use fully qualified names (e.g. com.stripe.model.checkout.Session) inside the methods.
-
 @RestController
 @RequestMapping("/api")
 @CrossOrigin(origins = {"http://localhost:3000", "https://geocode-frontend.smartgeocode.io", "*"})
@@ -66,6 +64,9 @@ public class GeocodeController {
 
     @Autowired
     private DataSource dataSource;
+
+    @Autowired
+    private LookupService lookupService;
 
     private final BCryptPasswordEncoder encoder = new BCryptPasswordEncoder();
 
@@ -139,12 +140,38 @@ public class GeocodeController {
         }
     }
 
+    private Long extractUserId(String authHeader) {
+        if (authHeader == null || !authHeader.startsWith("Bearer ")) {
+            return 0L;
+        }
+        String token = authHeader.substring(7);
+        try {
+            
+            Claims claims = Jwts.parserBuilder()
+                .setSigningKey(JWT_SECRET.getBytes(StandardCharsets.UTF_8))
+                .build()
+                .parseClaimsJws(token)
+                .getBody();
+            return claims.get("userId", Long.class);
+        } catch (Exception e) {
+            System.out.println("Invalid JWT: " + e.getMessage());
+            return 0L;
+        }
+    }
+
     @GetMapping("/geocode")
-    public Map<String, Object> geocode(@RequestParam("address") String addr, @RequestParam(value = "addr", required = false) String addrFallback) {
+    public Map<String, Object> geocode(@RequestParam("address") String addr, @RequestParam(value = "addr", required = false) String addrFallback, @RequestHeader(value = "Authorization", required = false) String authHeader) {
         String finalAddr = addr != null ? addr : addrFallback;
         if (finalAddr == null || finalAddr.isEmpty()) {
             return Map.of("status", "error", "message", "Missing address param");
         }
+
+        Long userId = extractUserId(authHeader);
+
+        if (!lookupService.canPerformLookup(userId, 1)) {
+            return Map.of("status", "error", "message", "Monthly lookup limit reached for your tier.");
+        }
+
         try {
             System.out.println("=== GEOCODE HIT: param = " + finalAddr + " at " + new Date());
 
@@ -181,6 +208,8 @@ public class GeocodeController {
             responseMap.put("lat", lat);
             responseMap.put("lng", lon);
             responseMap.put("formatted_address", displayName);
+
+            lookupService.incrementLookup(userId, 1);
 
             return responseMap;
 
@@ -537,8 +566,10 @@ public class GeocodeController {
     }
 
     @PostMapping(value = "/batch-geocode", consumes = "multipart/form-data")
-    public ResponseEntity<Map<String, Object>> batchGeocode(@RequestParam("file") MultipartFile file, @RequestParam("email") String email) {
+    public ResponseEntity<Map<String, Object>> batchGeocode(@RequestParam("file") MultipartFile file, @RequestParam("email") String email, @RequestHeader(value = "Authorization", required = false) String authHeader) {
         Map<String, Object> response = new HashMap<>();
+
+        Long tokenUserId = extractUserId(authHeader);
 
         if (file.isEmpty()) {
             response.put("status", "error");
@@ -555,7 +586,7 @@ public class GeocodeController {
                 response.put("message", "User not found");
                 return ResponseEntity.status(404).body(response);
             }
-            int userId = rs.getInt("id");
+            Long dbUserId = rs.getLong("id");
             String subscription = rs.getString("subscription_status");
             if (!"premium".equals(subscription)) {
                 response.put("status", "error");
@@ -563,9 +594,31 @@ public class GeocodeController {
                 return ResponseEntity.status(403).body(response);
             }
 
+            // Count lookups
+            int numLookups = 0;
+            try (CSVReader csvReader = new CSVReader(new InputStreamReader(file.getInputStream()))) {
+                String[] line;
+                while ((line = csvReader.readNext()) != null) {
+                    if (line.length > 0 && !allColumnsEmpty(line) && !line[0].trim().startsWith("#")) {
+                        numLookups++;
+                    }
+                }
+            }
+
+            // Limit check (token if available, else dbUserId)
+            Long limitUserId = tokenUserId != 0L ? tokenUserId : dbUserId;
+            if (!lookupService.canPerformLookup(limitUserId, numLookups)) {
+                response.put("status", "error");
+                response.put("message", "Monthly lookup limit reached for your tier.");
+                return ResponseEntity.status(403).body(response);
+            }
+
+            // Reset stream
+            file.getInputStream().reset();
+
             int batchId = -1;
             PreparedStatement batchStmt = conn.prepareStatement("INSERT INTO batches (user_id, status) VALUES (?, 'processing')", Statement.RETURN_GENERATED_KEYS);
-            batchStmt.setInt(1, userId);
+            batchStmt.setLong(1, dbUserId);
             batchStmt.executeUpdate();
             ResultSet generatedKeys = batchStmt.getGeneratedKeys();
             if (generatedKeys.next()) {
@@ -580,7 +633,6 @@ public class GeocodeController {
                 int skippedLeading = 0;
                 int skippedData = 0;
 
-                // Phase 1: Skip leading comments/empty until header
                 while ((line = csvReader.readNext()) != null) {
                     if (line.length == 0 || (line[0] != null && line[0].trim().startsWith("#")) || allColumnsEmpty(line)) {
                         skippedLeading++;
@@ -599,7 +651,6 @@ public class GeocodeController {
                     return ResponseEntity.badRequest().body(response);
                 }
 
-                // Case-insensitive check for 'address'
                 int addressIndex = -1;
                 for (int i = 0; i < headers.length; i++) {
                     String headerTrim = headers[i].trim().toLowerCase();
@@ -618,7 +669,6 @@ public class GeocodeController {
 
                 System.out.println("DEBUG: Headers found with 'address' at index " + addressIndex + ": " + java.util.Arrays.toString(headers));
 
-                // Phase 2: Process data rows
                 while ((line = csvReader.readNext()) != null) {
                     if (line.length == 0 || (line[0] != null && line[0].trim().startsWith("#")) || allColumnsEmpty(line)) {
                         skippedData++;
@@ -631,7 +681,6 @@ public class GeocodeController {
                         rowMap.put(header, line.length > i ? line[i].trim() : "");
                     }
 
-                    // Build clean query (name/landmark first for landmarks)
                     StringBuilder query = new StringBuilder();
 
                     String name = rowMap.get("name");
@@ -680,7 +729,7 @@ public class GeocodeController {
 
                         System.out.println("Sending query to Nominatim: " + finalQuery);
 
-                        Map<String, Object> geo = geocode(finalQuery, null);
+                        Map<String, Object> geo = geocode(finalQuery, null, null);
                         if ("success".equals(geo.get("status"))) {
                             rowMap.put("lat", (String) geo.get("lat"));
                             rowMap.put("lng", (String) geo.get("lng"));
@@ -695,7 +744,7 @@ public class GeocodeController {
                             fallback = fallback.trim();
                             if (!fallback.isEmpty() && !fallback.equals(finalQuery)) {
                                 System.out.println("Fallback query: " + fallback);
-                                geo = geocode(fallback, null);
+                                geo = geocode(fallback, null, null);
                                 if ("success".equals(geo.get("status"))) {
                                     rowMap.put("lat", (String) geo.get("lat"));
                                     rowMap.put("lng", (String) geo.get("lng"));
@@ -714,10 +763,11 @@ public class GeocodeController {
                     fullResults.add(rowMap);
                 }
 
+                lookupService.incrementLookup(limitUserId, fullResults.size());
+
                 System.out.println("=== DEBUG: Skipped " + skippedData + " data comment/blank lines during processing");
             }
 
-            // Build CSV results
             StringBuilder csvResults = new StringBuilder();
             csvResults.append("address,lat,lng,formatted_address,status,message\n");
             for (Map<String, String> row : fullResults) {
@@ -750,6 +800,13 @@ public class GeocodeController {
             response.put("message", "Batch processing failed—try again: " + e.getMessage());
             return ResponseEntity.status(500).body(response);
         }
+    }
+
+    @GetMapping("/usage")
+    public ResponseEntity<Map<String, Integer>> getUsage(@RequestHeader(value = "Authorization", required = false) String authHeader) {
+        Long userId = extractUserId(authHeader);
+        Map<String, Integer> usage = lookupService.getUsage(userId);
+        return ResponseEntity.ok(usage);
     }
 
     private boolean allColumnsEmpty(String[] line) {
@@ -849,7 +906,6 @@ public class GeocodeController {
         }
 
         try {
-            // ✅ EXPLICITLY USING CHECKOUT PARAMS
             com.stripe.param.checkout.SessionCreateParams params = com.stripe.param.checkout.SessionCreateParams.builder()
                 .setMode(com.stripe.param.checkout.SessionCreateParams.Mode.SUBSCRIPTION)
                 .addPaymentMethodType(com.stripe.param.checkout.SessionCreateParams.PaymentMethodType.CARD)
@@ -865,7 +921,6 @@ public class GeocodeController {
                 .putMetadata("address", address)
                 .build();
 
-            // ✅ EXPLICITLY USING CHECKOUT SESSION
             com.stripe.model.checkout.Session session = com.stripe.model.checkout.Session.create(params);
 
             return ResponseEntity.ok(Map.of("url", session.getUrl()));
@@ -918,14 +973,12 @@ public class GeocodeController {
             String customerId = rs.getString("stripe_customer_id");
             System.out.println("DEBUG: Found customer ID: " + customerId);
 
-            // ✅ EXPLICITLY USING BILLING PORTAL PARAMS
             com.stripe.param.billingportal.SessionCreateParams params = 
                 com.stripe.param.billingportal.SessionCreateParams.builder()
                 .setCustomer(customerId)
                 .setReturnUrl("https://geocode-frontend.smartgeocode.io/dashboard")
                 .build();
 
-            // ✅ EXPLICITLY USING BILLING PORTAL SESSION
             com.stripe.model.billingportal.Session session = 
                 com.stripe.model.billingportal.Session.create(params);
             
@@ -955,5 +1008,4 @@ public class GeocodeController {
             return "Connection failed: " + e.getMessage();
         }
     }
-
 }

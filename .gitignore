@@ -36,3 +36,12 @@ build/
 ### Local .env file ###
 .env*
 .env.local
+
+### Jar and backup files
+*.jar
+backups/
+
+### FE Files
+**/node_modules/ 
+**/target/ 
+**/*.jar 

@@ -9,20 +9,17 @@ export default function Signup() {
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
-  const [isExistingUser, setIsExistingUser] = useState(false);
   const router = useRouter();
 
   const handleSignup = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
     setError('');
-    setIsExistingUser(false);
 
     const normalizedEmail = email.toLowerCase().trim();
 
     try {
-      // 🛑 FIXED: Changed from 'https://smartgeocode.railway.internal...' to relative path
-      // Next.js will proxy this to your backend automatically.
+      // PROXY: Calls /api/signup -> Backend
       const res = await fetch('/api/signup', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -33,19 +30,19 @@ export default function Signup() {
       
       if (res.ok) {
         localStorage.setItem('email', normalizedEmail);
-        router.push('/success');
+        router.push('/success'); // Go to success/dashboard on new signup
       } else {
-        // Intelligent Error Handling
+        // If account exists, we redirect them to the LOGIN page, breaking the loop.
         const msg = data.message?.toLowerCase() || '';
-        if (msg.includes('email') && (msg.includes('exist') || msg.includes('taken') || msg.includes('log in'))) {
-            setIsExistingUser(true);
-            setError('Account already exists. Please log in.');
+        if (msg.includes('email') && (msg.includes('exist') || msg.includes('taken'))) {
+            // Redirect to Login with email pre-filled
+            router.push(`/login?email=${encodeURIComponent(normalizedEmail)}&error=exists`);
         } else {
-            setError(data.message || 'Signup failed—try again');
+            setError(data.message || 'Signup failed');
         }
       }
     } catch (err) {
-      console.error("Signup Error:", err);
+      console.error(err);
       setError('Network error. Please try again.');
     } finally {
       setLoading(false);
@@ -53,69 +50,49 @@ export default function Signup() {
   };
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-red-50 to-white flex items-center justify-center p-4">
+    <div className="min-h-screen bg-gray-50 flex items-center justify-center p-4">
       <div className="max-w-md w-full bg-white rounded-xl shadow-lg p-8">
-        <h2 className="text-2xl font-bold text-center mb-6 text-red-600">
-          {isExistingUser ? 'Welcome Back' : 'Sign Up'}
-        </h2>
+        <h2 className="text-2xl font-bold text-center mb-6 text-red-600">Create Account</h2>
         
         {error && (
-          <div className="bg-red-50 border border-red-200 text-red-600 p-3 rounded-lg mb-4 text-center text-sm font-semibold">
+          <div className="mb-4 p-3 bg-red-50 border border-red-200 text-red-600 rounded-lg text-sm font-semibold text-center">
             {error}
           </div>
         )}
 
-        {isExistingUser ? (
-          <div className="space-y-4">
-            <Link 
-              href="/success" // Assuming /success or /dashboard is your login target
-              className="block w-full bg-red-600 text-white text-center p-3 rounded-lg hover:bg-red-700 font-bold shadow-md"
-            >
-              Log In Now
-            </Link>
-            <button 
-              onClick={() => setIsExistingUser(false)} 
-              className="block w-full text-gray-500 text-sm hover:underline py-2"
-            >
-              Use a different email
-            </button>
-          </div>
-        ) : (
-          <form onSubmit={handleSignup} className="space-y-4">
-            <input
-              type="email"
-              placeholder="Email"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              required
-              className="w-full p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-transparent outline-none transition-all"
-            />
-            <input
-              type="password"
-              placeholder="Password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              required
-              className="w-full p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-transparent outline-none transition-all"
-            />
-            <button 
-              type="submit" 
-              disabled={loading} 
-              className="w-full bg-red-600 text-white p-3 rounded-lg hover:bg-red-700 font-semibold disabled:opacity-50 transition-colors"
-            >
-              {loading ? 'Creating Account...' : 'Sign Up'}
-            </button>
-          </form>
-        )}
+        <form onSubmit={handleSignup} className="space-y-4">
+          <input
+            type="email"
+            placeholder="Email"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            required
+            className="w-full p-3 border border-gray-300 rounded-lg outline-none focus:ring-2 focus:ring-red-500"
+          />
+          <input
+            type="password"
+            placeholder="Password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            required
+            className="w-full p-3 border border-gray-300 rounded-lg outline-none focus:ring-2 focus:ring-red-500"
+          />
+          <button 
+            type="submit" 
+            disabled={loading} 
+            className="w-full bg-red-600 text-white p-3 rounded-lg font-bold hover:bg-red-700 transition disabled:opacity-50"
+          >
+            {loading ? 'Creating Account...' : 'Sign Up'}
+          </button>
+        </form>
 
-        {!isExistingUser && (
-            <p className="text-center mt-6 text-sm text-gray-500">
-            Already have an account?{' '}
-            <Link href="/success" className="text-red-600 hover:underline font-semibold">
-                Log in
-            </Link>
-            </p>
-        )}
+        <p className="text-center mt-6 text-sm text-gray-600">
+          Already have an account?{' '}
+          {/* FIXED LINK: Points to the new /login page */}
+          <Link href="/login" className="text-red-600 font-semibold hover:underline">
+            Log in
+          </Link>
+        </p>
       </div>
     </div>
   );

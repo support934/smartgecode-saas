@@ -4,7 +4,7 @@ import { useState, useEffect, useRef } from 'react';
 import toast, { Toaster } from 'react-hot-toast';
 import { loadStripe } from '@stripe/stripe-js';
 
-// Load Stripe promise (Used in handleUpsell if needed, though we use direct checkout links mostly)
+// Load Stripe promise
 const stripePromise = loadStripe(process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY!);
 
 export default function Dashboard() {
@@ -17,6 +17,9 @@ export default function Dashboard() {
   const [error, setError] = useState('');
   const [showHelp, setShowHelp] = useState(false);
   
+  // Tabs State
+  const [activeTab, setActiveTab] = useState<'single' | 'batch'>('batch');
+
   // Single Lookup State
   const [address, setAddress] = useState('');
   const [singleResults, setSingleResults] = useState<any>(null);
@@ -31,27 +34,24 @@ export default function Dashboard() {
     if (typeof window !== 'undefined') {
       const storedEmail = (localStorage.getItem('email') || '').toLowerCase().trim();
       setEmail(storedEmail);
-
-      // FIX: Use 'token' (not authToken) to match Login Page
       const token = localStorage.getItem('token'); 
 
-      // 1. Fetch Subscription
       if (storedEmail) {
+        // 1. Fetch Subscription
         fetch(`/api/me?email=${encodeURIComponent(storedEmail)}`)
           .then(res => res.json())
           .then(data => {
             const status = data.subscription_status || 'free';
             setSubscription(status);
-            if (status === 'premium') {
-              loadBatches(storedEmail);
-            }
+            // Load batches for everyone now, so they can see history if they used it
+            loadBatches(storedEmail);
           })
           .catch(() => setSubscription('free'));
       } else {
         setSubscription('free');
       }
 
-      // 2. Fetch Usage (Authorized)
+      // 2. Fetch Usage
       if (token) {
         fetch('/api/usage', {
           headers: { 'Authorization': `Bearer ${token}` },
@@ -96,7 +96,6 @@ export default function Dashboard() {
     formData.append('file', file);
     formData.append('email', email);
     
-    // Auth header for backend limits
     const token = localStorage.getItem('token');
 
     try {
@@ -110,44 +109,41 @@ export default function Dashboard() {
 
       if (!res.ok) {
         const errData = await res.json().catch(() => ({}));
+        // Handle limits gracefully
+        if (res.status === 403) {
+            throw new Error(errData.message || "Monthly limit reached. Please upgrade.");
+        }
         throw new Error(errData.message || `HTTP error: ${res.status}`);
       }
 
       const data = await res.json();
       if (data.status === 'success') {
-        // Show immediate success state with preview if available
         setCurrentBatch({
             batchId: data.batchId,
             status: 'processing',
             totalRows: data.totalRows || 0, 
-            preview: data.preview || [] // Ensure preview is captured if sent
+            preview: data.preview || [] 
         });
         
-        loadBatches(email); // Refresh history
+        loadBatches(email);
         
-        // Trigger email notification
-        await fetch('/api/email', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              email: email,
-              address: `Batch #${data.batchId} - ${data.totalRows} rows`,
-              result: {
-                message: `Batch processed successfully! Total rows: ${data.totalRows}. Download full results from dashboard.`,
-                preview: data.preview ? data.preview.slice(0, 3) : []
-              },
-            }),
-        });
+        // Refresh usage after start (it might lag until processed, but good to try)
+        if (token) {
+             setTimeout(() => {
+                 fetch('/api/usage', { headers: { 'Authorization': `Bearer ${token}` } })
+                    .then(r => r.json()).then(d => setUsage(d));
+             }, 2000);
+        }
 
-        toast.success('Batch processing started! We will email you when done.');
+        toast.success('Batch started! We will email you when done.');
       } else {
         setError(data.message || 'Batch processing failed');
         toast.error('Batch failed');
       }
     } catch (err: unknown) {
       const errorMessage = err instanceof Error ? err.message : 'Unknown error';
-      setError('Upload failed: ' + errorMessage);
-      toast.error('Upload failed');
+      setError(errorMessage);
+      toast.error(errorMessage);
     } finally {
       setLoading(false);
     }
@@ -158,23 +154,15 @@ export default function Dashboard() {
   };
 
   const downloadSample = () => {
-    const csv = `# Smartgeocode Batch Sample CSV - Instructions:\n` +
-                `# Required: 'address' column (street or place name)\n` +
-                `# Optional but recommended: 'landmark' (e.g. Building name), 'city', 'state', 'zip', 'country' (improves accuracy a lot!)\n` +
-                `# Blank or "N/A" rows are skipped automatically\n` +
-                `# Save as .csv and upload below\n\n` +
-                `address,landmark,city,state,zip,country\n` +
-                `1600 Pennsylvania Ave NW,White House,Washington DC,,20500,USA\n` +
-                `Chennai,,Tamil Nadu,,,India\n` +
-                `1251 Avenue of the Americas,,New York,NY,10020,USA\n` +
-                `Ahmedabad,,Gujarat,,,India\n` +
-                `350 Fifth Avenue,Empire State Building,New York,NY,10118,USA\n` +
-                `Tokyo Tower,,Minato City,Tokyo,,Japan\n`;
+    const csv = `address,city,state,zip,country\n` +
+                `1600 Pennsylvania Ave NW,Washington,DC,20500,USA\n` +
+                `Empire State Building,New York,NY,10118,USA\n` +
+                `10 Downing Street,London,,SW1A 2AA,UK\n`;
     const blob = new Blob([csv], { type: 'text/csv' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = 'sample-addresses.csv';
+    a.download = 'smartgeocode_sample.csv';
     a.click();
   };
 
@@ -193,19 +181,11 @@ export default function Dashboard() {
       if (data.status === 'success') {
         lastAddressRef.current = address;
         
-        // Trigger email
-        await fetch('/api/email', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ email, address, result: data }),
-        });
-        
-        // Refresh usage immediately
+        // Refresh usage
         if(token) {
              fetch('/api/usage', { headers: { 'Authorization': `Bearer ${token}` } })
                 .then(r => r.json()).then(d => setUsage(d));
         }
-
         toast.success('Results sent to your email!');
       } else {
         toast.error(data.message || 'Geocode failed');
@@ -262,7 +242,7 @@ export default function Dashboard() {
       <header className="bg-red-600 text-white p-5 shadow-lg sticky top-0 z-50">
         <div className="max-w-7xl mx-auto flex items-center justify-between">
           <div className="flex items-center space-x-4">
-            <h1 className="text-2xl font-bold tracking-tight">Smartgeocode Dashboard</h1>
+            <h1 className="text-2xl font-bold tracking-tight">Smartgeocode</h1>
             <span className={`px-3 py-1 rounded text-xs font-bold uppercase tracking-wider ${subscription === 'premium' ? 'bg-yellow-400 text-red-900' : 'bg-red-800 text-red-100'}`}>
                 {subscription === 'premium' ? 'Premium' : 'Free Plan'}
             </span>
@@ -271,11 +251,11 @@ export default function Dashboard() {
           <div className="flex items-center space-x-6">
             {!usageLoading && (
               <div className="hidden md:block text-sm font-medium">
-                <div className="flex justify-between mb-1">
-                    <span>Usage</span>
-                    <span>{usage.used} / {usage.limit}</span>
+                <div className="flex justify-between mb-1 text-red-100">
+                    <span>Usage ({subscription === 'free' ? '500 limit' : 'Unlimited'})</span>
+                    <span>{usage.used} used</span>
                 </div>
-                <div className="w-32 h-2 bg-red-800 rounded-full overflow-hidden">
+                <div className="w-40 h-2 bg-red-800 rounded-full overflow-hidden border border-red-700">
                     <div 
                         className={`h-full transition-all duration-500 ${usage.used >= usage.limit ? 'bg-yellow-400' : 'bg-white'}`} 
                         style={{ width: `${Math.min((usage.used / usage.limit) * 100, 100)}%` }}
@@ -284,7 +264,7 @@ export default function Dashboard() {
               </div>
             )}
 
-            {subscription === 'premium' && (
+            {subscription === 'premium' ? (
               <button
                 onClick={async () => {
                   try {
@@ -301,6 +281,13 @@ export default function Dashboard() {
               >
                 Manage Plan
               </button>
+            ) : (
+               <button
+                onClick={handleUpsell}
+                className="bg-yellow-400 text-red-900 px-4 py-2 rounded text-sm font-bold hover:bg-yellow-300 transition shadow-sm"
+              >
+                Upgrade to Pro
+              </button>
             )}
             
             <button onClick={logout} className="text-white hover:text-red-200 text-sm font-semibold transition">
@@ -313,18 +300,37 @@ export default function Dashboard() {
       {/* Main Content */}
       <main className="max-w-7xl mx-auto p-6 md:p-10">
         
-        {/* FREE USER VIEW */}
-        {subscription === 'free' ? (
-          <div className="max-w-3xl mx-auto">
-            <div className="text-center mb-10">
-              <h2 className="text-4xl font-extrabold text-gray-900 mb-4">Single Address Lookup</h2>
-              <p className="text-gray-600 text-lg">
-                You are on the Free Plan. Lookup addresses one by one. <br/>
-                For bulk CSV processing, <button onClick={handleUpsell} className="text-red-600 font-bold underline hover:text-red-800">upgrade to Premium</button>.
-              </p>
+        {/* TABS - The Core UI Fix */}
+        <div className="flex justify-center mb-8">
+            <div className="bg-white p-1 rounded-xl shadow-sm border border-gray-200 inline-flex">
+                <button
+                    onClick={() => setActiveTab('batch')}
+                    className={`px-6 py-2 rounded-lg text-sm font-bold transition-all ${
+                        activeTab === 'batch' 
+                        ? 'bg-red-600 text-white shadow-md' 
+                        : 'text-gray-500 hover:text-gray-900'
+                    }`}
+                >
+                    Batch Upload
+                </button>
+                <button
+                    onClick={() => setActiveTab('single')}
+                    className={`px-6 py-2 rounded-lg text-sm font-bold transition-all ${
+                        activeTab === 'single' 
+                        ? 'bg-red-600 text-white shadow-md' 
+                        : 'text-gray-500 hover:text-gray-900'
+                    }`}
+                >
+                    Single Lookup
+                </button>
             </div>
+        </div>
 
+        {/* --- SINGLE LOOKUP VIEW --- */}
+        {activeTab === 'single' && (
+          <div className="max-w-3xl mx-auto animate-in fade-in zoom-in-95 duration-200">
             <div className="bg-white rounded-2xl shadow-xl p-8 border border-gray-100">
+              <h2 className="text-2xl font-bold text-gray-900 mb-6 text-center">Single Address Lookup</h2>
               <form onSubmit={handleSingleSubmit} className="space-y-6">
                 <input
                   type="text"
@@ -344,7 +350,7 @@ export default function Dashboard() {
               </form>
 
               {singleResults && (
-                <div className="mt-8 p-6 bg-green-50 rounded-xl border border-green-100 animate-in fade-in slide-in-from-bottom-4">
+                <div className="mt-8 p-6 bg-green-50 rounded-xl border border-green-100 animate-in fade-in">
                   <h4 className="text-lg font-bold text-green-800 mb-3 flex items-center">
                     <span className="bg-green-200 text-green-800 rounded-full w-6 h-6 flex items-center justify-center mr-2 text-sm">✓</span>
                     Result Found
@@ -354,28 +360,25 @@ export default function Dashboard() {
                     <p><span className="font-semibold text-gray-900">Lng:</span> {singleResults.lng}</p>
                     <p><span className="font-semibold text-gray-900">Address:</span> {singleResults.formatted_address}</p>
                   </div>
-                  
-                  <div className="mt-6 pt-6 border-t border-green-200 text-center">
-                    <p className="text-green-800 font-medium mb-3">Need to process thousands?</p>
-                    <button
-                      onClick={handleUpsell}
-                      className="bg-green-600 text-white px-8 py-3 rounded-lg font-bold hover:bg-green-700 transition shadow-lg transform hover:scale-105"
-                    >
-                      Upgrade to Batch ($29/mo)
-                    </button>
-                  </div>
                 </div>
               )}
             </div>
           </div>
-        ) : (
-          /* PREMIUM USER VIEW */
-          <div className="grid lg:grid-cols-3 gap-8">
+        )}
+
+        {/* --- BATCH UPLOAD VIEW --- */}
+        {activeTab === 'batch' && (
+          <div className="grid lg:grid-cols-3 gap-8 animate-in fade-in zoom-in-95 duration-200">
             {/* Left: Upload */}
             <div className="lg:col-span-2 space-y-8">
                 <div className="bg-white rounded-2xl shadow-lg p-8 border border-gray-100">
                     <div className="flex justify-between items-center mb-6">
-                        <h2 className="text-2xl font-bold text-gray-800">Batch Geocoding</h2>
+                        <div>
+                            <h2 className="text-2xl font-bold text-gray-800">Batch Geocoding</h2>
+                            {subscription === 'free' && (
+                                <p className="text-xs text-red-600 font-medium mt-1">Free Plan Limit: 500 rows/mo</p>
+                            )}
+                        </div>
                         <div className="space-x-4 text-sm font-medium">
                             <button onClick={downloadSample} className="text-red-600 hover:text-red-800 flex items-center gap-1">
                                 <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" /></svg>
@@ -410,7 +413,19 @@ export default function Dashboard() {
                         </button>
                     </form>
 
-                    {/* CURRENT BATCH PREVIEW (NEW: Added missing feature) */}
+                    {error && (
+                        <div className="mt-4 p-4 bg-red-50 text-red-700 rounded-lg border border-red-200">
+                            <strong>Error:</strong> {error}
+                            {subscription === 'free' && error.includes('limit') && (
+                                <div className="mt-2">
+                                    <button onClick={handleUpsell} className="text-red-900 underline font-bold hover:text-red-700">
+                                        Upgrade to Premium for Unlimited
+                                    </button>
+                                </div>
+                            )}
+                        </div>
+                    )}
+
                     {currentBatch && currentBatch.status === 'success' && currentBatch.preview && (
                       <div className="mt-8">
                         <h3 className="text-lg font-bold mb-4 text-gray-800">Batch Preview</h3>

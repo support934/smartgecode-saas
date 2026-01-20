@@ -1,10 +1,11 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, Suspense } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 
-export default function Login() {
+// Part 1: The Logic Component (Uses Search Params)
+function LoginForm() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
@@ -16,6 +17,10 @@ export default function Login() {
     // Auto-fill email if passed from signup/landing
     const paramEmail = searchParams.get('email');
     if (paramEmail) setEmail(paramEmail);
+    
+    // Show error message if passed from redirect
+    const paramError = searchParams.get('error');
+    if (paramError === 'exists') setError('Account exists. Please log in.');
   }, [searchParams]);
 
   const handleLogin = async (e: React.FormEvent) => {
@@ -24,7 +29,6 @@ export default function Login() {
     setError('');
 
     try {
-      // Use relative path - Proxy handles the rest
       const res = await fetch('/api/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -34,11 +38,10 @@ export default function Login() {
       const data = await res.json();
 
       if (res.ok) {
-        // Save token and redirect to dashboard
         localStorage.setItem('token', data.token);
         localStorage.setItem('email', email.toLowerCase().trim());
-        // Force a hard reload or router push to dashboard
-        window.location.href = '/dashboard'; 
+        localStorage.setItem('userId', data.userId);
+        window.location.href = '/success'; 
       } else {
         setError(data.message || 'Invalid email or password');
       }
@@ -103,5 +106,14 @@ export default function Login() {
         </p>
       </div>
     </div>
+  );
+}
+
+// Part 2: The Build-Safe Wrapper (Default Export)
+export default function LoginPage() {
+  return (
+    <Suspense fallback={<div className="min-h-screen flex items-center justify-center">Loading...</div>}>
+      <LoginForm />
+    </Suspense>
   );
 }

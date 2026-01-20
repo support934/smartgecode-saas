@@ -155,6 +155,8 @@ public class GeocodeController {
     }
 
     // === 2. LEAD CAPTURE EMAIL (UPDATED) ===
+    // ... inside GeocodeController.java ...
+
     @PostMapping("/email")
     public ResponseEntity<String> sendEmail(@RequestBody Map<String, Object> payload) {
         String email = (String) payload.get("email");
@@ -163,12 +165,11 @@ public class GeocodeController {
 
         if (email == null) return ResponseEntity.badRequest().body("Missing email");
 
-        // Capture Shadow Account
+        // 1. Capture Lead (Shadow Account) if new
         try (Connection conn = dataSource.getConnection()) {
             PreparedStatement check = conn.prepareStatement("SELECT id FROM users WHERE email = ?");
             check.setString(1, email);
             if (!check.executeQuery().next()) {
-                // User does not exist -> Create "Lead" account
                 String randomPass = UUID.randomUUID().toString();
                 PreparedStatement insert = conn.prepareStatement("INSERT INTO users (email, password_hash, subscription_status) VALUES (?, ?, 'lead')");
                 insert.setString(1, email);
@@ -178,11 +179,20 @@ public class GeocodeController {
             }
         } catch (Exception e) { e.printStackTrace(); }
 
-        // Send Email
+        // 2. Send Email (FIXED LINK)
         Email from = new Email("noreply@smartgeocode.io");
         Email to = new Email(email);
-        String body = "Results for: " + address + "\n\nLat: " + result.get("lat") + "\nLng: " + result.get("lng") + 
-                      "\n\nClaim your free account to batch process 500 rows: https://geocode-frontend.smartgeocode.io/forgot-password?email=" + email;
+        
+        // OLD: .../forgot-password?email=...
+        // NEW: .../signup?email=...
+        String link = "https://geocode-frontend.smartgeocode.io/signup?email=" + email;
+        
+        String body = "Here are your results for: " + address + "\n\n" +
+                      "Lat: " + result.get("lat") + "\n" +
+                      "Lng: " + result.get("lng") + "\n\n" +
+                      "Your free account is reserved! Click below to set your password and start batch processing:\n" + 
+                      link;
+        
         Content content = new Content("text/plain", body);
         Mail mail = new Mail(from, "Your Geocode Results", to, content);
         

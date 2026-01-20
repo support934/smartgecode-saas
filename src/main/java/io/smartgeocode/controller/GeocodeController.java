@@ -13,6 +13,8 @@ import java.util.Map;
 import java.util.List;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.Arrays;
+import java.util.Collections;
 import org.springframework.web.multipart.MultipartFile;
 import org.springframework.beans.factory.annotation.Autowired;
 import javax.sql.DataSource;
@@ -64,9 +66,9 @@ public class GeocodeController {
     private final HttpClient client = HttpClient.newHttpClient();
     private final ObjectMapper mapper = new ObjectMapper();
     private final String SENDGRID_API_KEY = System.getenv("SENDGRID_API_KEY");
-
-    // CONFIG: 1000ms = 1 request/sec to prevent IP bans
-    private final int API_DELAY_MS = 1000; 
+    
+    // DELAY: 1.1s is the "Golden Rule" for Nominatim to avoid bans. Do not lower this.
+    private final int API_DELAY_MS = 1100; 
 
     @Autowired
     private DataSource dataSource;
@@ -88,38 +90,29 @@ public class GeocodeController {
     }
 
     public GeocodeController() {
-        System.out.println("=== GeocodeController Instantiated (FULL VERSION) ===");
+        System.out.println("=== GeocodeController Live: Heavy-Duty Version Loaded ===");
     }
 
     static {
         if (System.getenv("STRIPE_CKOUT_SECRET_KEY") == null) {
-            System.err.println("WARNING: STRIPE_CKOUT_SECRET_KEY missing. Payments will fail.");
+            System.err.println("CRITICAL: STRIPE_CKOUT_SECRET_KEY is missing!");
         }
     }
 
     @PostConstruct
     public void initDatabase() {
         try (Connection conn = dataSource.getConnection()) {
-            System.out.println("DB Connected. Ensuring schema...");
-            // 1. Users Table
+            System.out.println("Checking DB Schema...");
             String sqlUsers = "CREATE TABLE IF NOT EXISTS users (id SERIAL PRIMARY KEY, email VARCHAR(255) UNIQUE NOT NULL, password_hash VARCHAR(255) NOT NULL, subscription_status VARCHAR(20) DEFAULT 'free', reset_token VARCHAR(500), stripe_customer_id VARCHAR(255))";
             conn.prepareStatement(sqlUsers).execute();
 
-            // 2. Batches Table (Updated with progress columns)
+            // Batches table needs to hold LARGE text for the results CSV
             String sqlBatches = "CREATE TABLE IF NOT EXISTS batches (id SERIAL PRIMARY KEY, user_id INTEGER REFERENCES users(id), status VARCHAR(20) DEFAULT 'processing', created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, results TEXT, total_rows INTEGER DEFAULT 0, processed_rows INTEGER DEFAULT 0)";
             conn.prepareStatement(sqlBatches).execute();
-            
-            System.out.println("Schema check complete.");
+            System.out.println("DB Schema Verified.");
         } catch (Exception e) {
             e.printStackTrace();
-            System.err.println("DB Init Failed: " + e.getMessage());
         }
-    }
-
-    // Redirect root /api calls to frontend docs or dashboard
-    @GetMapping("/")
-    public RedirectView apiRoot() {
-        return new RedirectView("https://geocode-frontend.smartgeocode.io");
     }
 
     private Long extractUserId(String authHeader) {
@@ -136,152 +129,34 @@ public class GeocodeController {
         }
     }
 
-    // === 1. SINGLE GEOCODE ===
+    // === 1. SINGLE LOOKUP (Keep simple logic here) ===
     @GetMapping("/geocode")
-    public Map<String, Object> geocode(@RequestParam("address") String addr, @RequestParam(value = "addr", required = false) String addrFallback, @RequestHeader(value = "Authorization", required = false) String authHeader) {
-        String finalAddr = addr != null ? addr : addrFallback;
-        if (finalAddr == null || finalAddr.isEmpty()) return Map.of("status", "error", "message", "Missing address");
+    public Map<String, Object> geocode(@RequestParam("address") String addr, @RequestHeader(value = "Authorization", required = false) String authHeader) {
+        if (addr == null || addr.isEmpty()) return Map.of("status", "error", "message", "Missing address");
 
         Long userId = extractUserId(authHeader);
         if (!lookupService.canPerformLookup(userId, 1)) {
             return Map.of("status", "error", "message", "Monthly limit reached. Upgrade to Premium.");
         }
 
-        Map<String, Object> result = performGeocodeRequest(finalAddr);
+        // Use the smart logic even for single lookups if they contain commas
+        Map<String, Object> result = performGeocodeRequest(addr);
+        
         if ("success".equals(result.get("status"))) {
             lookupService.incrementLookup(userId, 1);
         }
         return result;
     }
 
-    // === 2. LEAD CAPTURE EMAIL (UPDATED) ===
-    // ... inside GeocodeController.java ...
-
-    @PostMapping("/email")
-    public ResponseEntity<String> sendEmail(@RequestBody Map<String, Object> payload) {
-        String email = (String) payload.get("email");
-        String address = (String) payload.get("address");
-        Map<String, Object> result = (Map<String, Object>) payload.get("result");
-
-        if (email == null) return ResponseEntity.badRequest().body("Missing email");
-
-        // 1. Capture Lead (Shadow Account) if new
-        try (Connection conn = dataSource.getConnection()) {
-            PreparedStatement check = conn.prepareStatement("SELECT id FROM users WHERE email = ?");
-            check.setString(1, email);
-            if (!check.executeQuery().next()) {
-                String randomPass = UUID.randomUUID().toString();
-                PreparedStatement insert = conn.prepareStatement("INSERT INTO users (email, password_hash, subscription_status) VALUES (?, ?, 'lead')");
-                insert.setString(1, email);
-                insert.setString(2, encoder.encode(randomPass));
-                insert.executeUpdate();
-                System.out.println("New Lead Captured: " + email);
-            }
-        } catch (Exception e) { e.printStackTrace(); }
-
-        // 2. Send Email (FIXED LINK)
-        Email from = new Email("noreply@smartgeocode.io");
-        Email to = new Email(email);
-        
-        // OLD: .../forgot-password?email=...
-        // NEW: .../signup?email=...
-        String link = "https://geocode-frontend.smartgeocode.io/signup?email=" + email;
-        
-        String body = "Here are your results for: " + address + "\n\n" +
-                      "Lat: " + result.get("lat") + "\n" +
-                      "Lng: " + result.get("lng") + "\n\n" +
-                      "Your free account is reserved! Click below to set your password and start batch processing:\n" + 
-                      link;
-        
-        Content content = new Content("text/plain", body);
-        Mail mail = new Mail(from, "Your Geocode Results", to, content);
-        
-        try {
-            SendGrid sg = new SendGrid(SENDGRID_API_KEY);
-            Request request = new Request();
-            request.setMethod(Method.POST);
-            request.setEndpoint("mail/send");
-            request.setBody(mail.build());
-            sg.api(request);
-            return ResponseEntity.ok("Email sent");
-        } catch (Exception e) { return ResponseEntity.status(500).body("Email failed"); }
-    }
-
-    // === 3. AUTH (Signup/Login) ===
-    @PostMapping("/signup")
-    public ResponseEntity<Map<String, Object>> signup(@RequestBody Map<String, String> credentials) {
-        String email = credentials.get("email");
-        String password = credentials.get("password");
-        if (email == null || password == null) return ResponseEntity.badRequest().body(Map.of("status", "error", "message", "Missing email/password"));
-
-        try (Connection conn = dataSource.getConnection()) {
-            PreparedStatement check = conn.prepareStatement("SELECT id, subscription_status FROM users WHERE email = ?");
-            check.setString(1, email);
-            ResultSet rs = check.executeQuery();
-            
-            if (rs.next()) {
-                // If they are a 'lead', upgrade them to 'free' and set password
-                if ("lead".equals(rs.getString("subscription_status"))) {
-                    PreparedStatement update = conn.prepareStatement("UPDATE users SET password_hash = ?, subscription_status = 'free' WHERE email = ?");
-                    update.setString(1, encoder.encode(password));
-                    update.setString(2, email);
-                    update.executeUpdate();
-                    int userId = rs.getInt("id");
-                    return ResponseEntity.ok(Map.of("status", "success", "token", generateToken(email, userId), "userId", userId));
-                }
-                return ResponseEntity.status(400).body(Map.of("status", "error", "message", "Email exists. Please log in."));
-            }
-
-            PreparedStatement insert = conn.prepareStatement("INSERT INTO users (email, password_hash) VALUES (?, ?)", Statement.RETURN_GENERATED_KEYS);
-            insert.setString(1, email);
-            insert.setString(2, encoder.encode(password));
-            insert.executeUpdate();
-            ResultSet keys = insert.getGeneratedKeys();
-            if (keys.next()) {
-                int userId = keys.getInt(1);
-                return ResponseEntity.ok(Map.of("status", "success", "token", generateToken(email, userId), "userId", userId));
-            }
-            return ResponseEntity.status(500).body(Map.of("status", "error", "message", "Signup failed"));
-        } catch (Exception e) { return ResponseEntity.status(500).body(Map.of("status", "error", "message", e.getMessage())); }
-    }
-
-    @PostMapping("/login")
-    public ResponseEntity<Map<String, Object>> login(@RequestBody Map<String, String> credentials) {
-        String email = credentials.get("email");
-        String password = credentials.get("password");
-        try (Connection conn = dataSource.getConnection()) {
-            PreparedStatement stmt = conn.prepareStatement("SELECT id, password_hash FROM users WHERE email = ?");
-            stmt.setString(1, email);
-            ResultSet rs = stmt.executeQuery();
-            if (rs.next() && encoder.matches(password, rs.getString("password_hash"))) {
-                int userId = rs.getInt("id");
-                return ResponseEntity.ok(Map.of("status", "success", "token", generateToken(email, userId), "userId", userId));
-            }
-            return ResponseEntity.status(401).body(Map.of("status", "error", "message", "Invalid credentials"));
-        } catch (Exception e) { return ResponseEntity.status(500).body(Map.of("status", "error", "message", "Login error")); }
-    }
-
-    // === 4. ASYNC BATCH PROCESSING ===
-    
-    // RESTORED: Critical helper for cleaning dirty CSVs
-    private boolean allColumnsEmpty(String[] line) {
-        if (line == null) return true;
-        for (String col : line) {
-            if (col != null && !col.trim().isEmpty()) {
-                return false;
-            }
-        }
-        return true;
-    }
-
+    // === 2. BATCH GEOCODE (THE HEAVY LIFTER) ===
     @PostMapping(value = "/batch-geocode", consumes = "multipart/form-data")
     public ResponseEntity<Map<String, Object>> batchGeocode(@RequestParam("file") MultipartFile file, @RequestParam("email") String email, @RequestHeader(value = "Authorization", required = false) String authHeader) {
         Long tokenUserId = extractUserId(authHeader);
         if (file.isEmpty()) return ResponseEntity.badRequest().body(Map.of("status", "error", "message", "Empty file"));
 
         try {
+            // A. Authenticate
             Long dbUserId;
-            // 1. Validate User
             try (Connection conn = dataSource.getConnection()) {
                 PreparedStatement stmt = conn.prepareStatement("SELECT id FROM users WHERE email = ?");
                 stmt.setString(1, email);
@@ -290,7 +165,7 @@ public class GeocodeController {
                 dbUserId = rs.getLong("id");
             }
 
-            // 2. Parse & Count Valid Rows (Using allColumnsEmpty)
+            // B. Parse CSV
             List<String[]> validRows = new ArrayList<>();
             try (CSVReader reader = new CSVReader(new InputStreamReader(file.getInputStream()))) {
                 String[] line;
@@ -300,17 +175,15 @@ public class GeocodeController {
                     }
                 }
             }
-            int rowCount = validRows.size();
-            
-            // 3. Limit Check
+            int rowCount = validRows.isEmpty() ? 0 : validRows.size() - 1; // Minus header
+
+            // C. Check Limits
             Long limitUserId = tokenUserId != 0L ? tokenUserId : dbUserId;
-            // Note: rowCount might include header, so precise check happens in async, but this is a good pre-check
-            // If rowCount is huge, we might fail here. 
-            if (!lookupService.canPerformLookup(limitUserId, rowCount > 1 ? rowCount - 1 : 1)) {
+            if (!lookupService.canPerformLookup(limitUserId, rowCount)) {
                 return ResponseEntity.status(403).body(Map.of("status", "error", "message", "Batch exceeds monthly limit. Upgrade to Premium."));
             }
 
-            // 4. Create Batch Record
+            // D. Init Batch Record
             int batchId;
             try (Connection conn = dataSource.getConnection()) {
                 PreparedStatement stmt = conn.prepareStatement("INSERT INTO batches (user_id, status, total_rows, processed_rows) VALUES (?, 'processing', ?, 0)", Statement.RETURN_GENERATED_KEYS);
@@ -322,165 +195,267 @@ public class GeocodeController {
                 batchId = keys.getInt(1);
             }
 
-            // 5. Start Async
-            CompletableFuture.runAsync(() -> processBatchAsync(batchId, limitUserId, validRows));
-            return ResponseEntity.ok(Map.of("status", "success", "batchId", batchId, "message", "Processing started."));
+            // E. Start Async Process
+            CompletableFuture.runAsync(() -> processBatchLogic(batchId, limitUserId, validRows, email));
+            
+            return ResponseEntity.ok(Map.of("status", "success", "batchId", batchId, "message", "Processing started.", "totalRows", rowCount));
 
-        } catch (Exception e) { return ResponseEntity.status(500).body(Map.of("status", "error", "message", e.getMessage())); }
+        } catch (Exception e) {
+            return ResponseEntity.status(500).body(Map.of("status", "error", "message", e.getMessage()));
+        }
     }
 
-    private void processBatchAsync(int batchId, Long userId, List<String[]> rows) {
-        List<String> resultsCsv = new ArrayList<>();
-        resultsCsv.add("address,lat,lng,formatted_address,status");
+    // === 3. THE "IRON CLAD" LOGIC ENGINE ===
+    private void processBatchLogic(int batchId, Long userId, List<String[]> rows, String email) {
+        StringBuilder csvOutput = new StringBuilder();
+        // Add headers for result CSV
+        csvOutput.append("input_address,lat,lng,formatted_address,status,match_type\n");
+        
+        String[] headers = null;
+        Map<String, Integer> colMap = new HashMap<>();
         
         int processed = 0;
-        String[] headers = null;
-        int addrIdx = -1;
 
         for (String[] line : rows) {
-            // Header Detection
+            // 1. Handle Header
             if (headers == null) {
                 headers = line;
                 for(int i=0; i<headers.length; i++) {
-                    if(headers[i].toLowerCase().trim().equals("address")) addrIdx = i;
+                    colMap.put(headers[i].toLowerCase().trim(), i);
                 }
-                if (addrIdx == -1) {
-                    failBatch(batchId, "Missing 'address' column");
+                // Validate required columns
+                if (!colMap.containsKey("address") && !colMap.containsKey("landmark")) {
+                    failBatch(batchId, "CSV must contain 'address' or 'landmark' column");
                     return;
                 }
-                continue; // Skip header row in processing
+                continue;
             }
 
-            // Extract Address
-            String addr = (line.length > addrIdx) ? line[addrIdx].trim() : "";
-            
-            if (addr.isEmpty()) {
-                resultsCsv.add("\"\",\"\",\"\",\"\",\"skipped\"");
-            } else {
-                Map<String, Object> geo = performGeocodeRequest(addr);
-                resultsCsv.add(String.format("\"%s\",\"%s\",\"%s\",\"%s\",\"%s\"", 
-                    addr, 
-                    geo.getOrDefault("lat", ""), 
-                    geo.getOrDefault("lng", ""), 
-                    geo.getOrDefault("formatted_address", ""), 
-                    geo.get("status")
-                ));
-                
-                if ("success".equals(geo.get("status"))) lookupService.incrementLookup(userId, 1);
-            }
-            
+            // 2. Extract Data
             processed++;
-            if (processed % 5 == 0) updateBatchProgress(batchId, processed);
+            
+            String address = getVal(line, colMap, "address");
+            String landmark = getVal(line, colMap, "landmark");
+            String city = getVal(line, colMap, "city");
+            String state = getVal(line, colMap, "state");
+            String country = getVal(line, colMap, "country");
+            String zip = getVal(line, colMap, "zip");
+
+            Map<String, Object> result = Map.of("status", "error");
+            String matchType = "none";
+
+            // --- WATERFALL STRATEGY (High Accuracy) ---
+            
+            // Attempt 1: Landmark + City + Country (Best for famous places)
+            if (!landmark.isEmpty()) {
+                String q = buildQuery(landmark, city, state, country);
+                result = performGeocodeRequest(q);
+                if ("success".equals(result.get("status"))) matchType = "landmark_context";
+            }
+
+            // Attempt 2: Address + City + State + Zip (Standard Postal)
+            if (!"success".equals(result.get("status")) && !address.isEmpty()) {
+                String q = buildQuery(address, city, state, country);
+                result = performGeocodeRequest(q);
+                if ("success".equals(result.get("status"))) matchType = "address_context";
+            }
+
+            // Attempt 3: Landmark Only (Global search)
+            if (!"success".equals(result.get("status")) && !landmark.isEmpty()) {
+                result = performGeocodeRequest(landmark);
+                if ("success".equals(result.get("status"))) matchType = "landmark_only";
+            }
+
+            // Attempt 4: Address Only (Fallback)
+            if (!"success".equals(result.get("status")) && !address.isEmpty()) {
+                result = performGeocodeRequest(address);
+                if ("success".equals(result.get("status"))) matchType = "address_only";
+            }
+
+            // Attempt 5: City/Zip Fallback (Last resort)
+            if (!"success".equals(result.get("status"))) {
+                 String q = buildQuery("", city, state, country); // Just city/country
+                 if (!q.isEmpty()) {
+                     result = performGeocodeRequest(q);
+                     if ("success".equals(result.get("status"))) matchType = "city_fallback";
+                 }
+            }
+
+            // 3. Append to CSV
+            String inputRep = (landmark + " " + address).trim();
+            String rowString = String.format("\"%s\",\"%s\",\"%s\",\"%s\",\"%s\",\"%s\"\n", 
+                inputRep.replace("\"", "\"\""),
+                result.getOrDefault("lat", ""),
+                result.getOrDefault("lng", ""),
+                result.getOrDefault("formatted_address", "").toString().replace("\"", "\"\""),
+                result.get("status"),
+                matchType
+            );
+            csvOutput.append(rowString);
+
+            // 4. Update Usage & DB (LIVE UPDATE)
+            if ("success".equals(result.get("status"))) lookupService.incrementLookup(userId, 1);
+
+            // CRITICAL: Update DB every row so frontend polling sees live data
+            updateBatchProgress(batchId, processed, csvOutput.toString());
+            
+            // 5. Rate Limit Delay
             try { Thread.sleep(API_DELAY_MS); } catch (InterruptedException ignored) {}
         }
-        
-        finishBatch(batchId, String.join("\n", resultsCsv));
+
+        // Finalize
+        finishBatch(batchId, csvOutput.toString(), processed);
+        sendCompletionEmail(email, batchId, processed);
     }
 
-    private Map<String, Object> performGeocodeRequest(String address) {
+    private String getVal(String[] line, Map<String, Integer> map, String key) {
+        if (map.containsKey(key) && map.get(key) < line.length) {
+            return line[map.get(key)].trim();
+        }
+        return "";
+    }
+
+    private String buildQuery(String main, String city, String state, String country) {
+        List<String> parts = new ArrayList<>();
+        if (!main.isEmpty()) parts.add(main);
+        if (!city.isEmpty()) parts.add(city);
+        if (!state.isEmpty()) parts.add(state);
+        if (!country.isEmpty()) parts.add(country);
+        return String.join(", ", parts);
+    }
+
+    private Map<String, Object> performGeocodeRequest(String query) {
         try {
-            String encodedAddr = address.replace(" ", "+").replace(",", "%2C");
+            if (query.trim().isEmpty()) return Map.of("status", "skipped");
+            
+            String encoded = query.replace(" ", "+").replace(",", "%2C");
             String email = System.getenv("NOMINATIM_EMAIL") != null ? System.getenv("NOMINATIM_EMAIL") : "admin@smartgeocode.io";
-            String url = "https://nominatim.openstreetmap.org/search?format=json&email=" + email + "&q=" + encodedAddr + "&limit=1";
+            // Use q= for flexible search
+            String url = "https://nominatim.openstreetmap.org/search?format=json&email=" + email + "&q=" + encoded + "&limit=1";
+            
             HttpResponse<String> response = client.send(HttpRequest.newBuilder().uri(URI.create(url)).header("User-Agent", "SmartGeocode/1.0").build(), HttpResponse.BodyHandlers.ofString());
-            if (response.statusCode() != 200) return Map.of("status", "error", "message", "Provider Error");
-            Object parsed = mapper.readValue(response.body(), Object.class);
-            if (parsed instanceof List && !((List<?>) parsed).isEmpty()) {
-                Map<String, Object> first = ((List<Map<String, Object>>) parsed).get(0);
-                return Map.of("status", "success", "lat", first.get("lat"), "lng", first.get("lon"), "formatted_address", first.get("display_name"));
+            
+            if (response.statusCode() == 200) {
+                Object parsed = mapper.readValue(response.body(), Object.class);
+                if (parsed instanceof List && !((List<?>) parsed).isEmpty()) {
+                    Map<String, Object> first = ((List<Map<String, Object>>) parsed).get(0);
+                    return Map.of("status", "success", "lat", first.get("lat"), "lng", first.get("lon"), "formatted_address", first.get("display_name"));
+                }
             }
-            return Map.of("status", "error", "message", "Not found");
-        } catch (Exception e) { return Map.of("status", "error", "message", "System Error"); }
+        } catch (Exception e) {}
+        return Map.of("status", "error");
     }
 
-    private void updateBatchProgress(int batchId, int count) {
+    // === 4. DB UPDATE HELPERS (LIVE) ===
+    private void updateBatchProgress(int batchId, int count, String partialCsv) {
         try (Connection conn = dataSource.getConnection()) {
-            PreparedStatement stmt = conn.prepareStatement("UPDATE batches SET processed_rows = ? WHERE id = ?");
+            // Update BOTH processed count AND the results text for live preview
+            PreparedStatement stmt = conn.prepareStatement("UPDATE batches SET processed_rows = ?, results = ? WHERE id = ?");
             stmt.setInt(1, count);
-            stmt.setInt(2, batchId);
+            stmt.setString(2, partialCsv);
+            stmt.setInt(3, batchId);
             stmt.executeUpdate();
-        } catch (Exception e) {}
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
     }
 
-    private void finishBatch(int batchId, String csvContent) {
+    private void finishBatch(int batchId, String csv, int total) {
         try (Connection conn = dataSource.getConnection()) {
-            PreparedStatement stmt = conn.prepareStatement("UPDATE batches SET status = 'complete', results = ?, processed_rows = total_rows WHERE id = ?");
-            stmt.setString(1, csvContent);
-            stmt.setInt(2, batchId);
+            PreparedStatement stmt = conn.prepareStatement("UPDATE batches SET status = 'complete', results = ?, processed_rows = ? WHERE id = ?");
+            stmt.setString(1, csv);
+            stmt.setInt(2, total);
+            stmt.setInt(3, batchId);
             stmt.executeUpdate();
-        } catch (Exception e) {}
+        } catch (Exception e) { e.printStackTrace(); }
     }
 
     private void failBatch(int batchId, String reason) {
         try (Connection conn = dataSource.getConnection()) {
             PreparedStatement stmt = conn.prepareStatement("UPDATE batches SET status = 'failed', results = ? WHERE id = ?");
-            stmt.setString(1, reason);
-            stmt.setInt(2, batchId);
-            stmt.executeUpdate();
+            stmt.setString(1, reason); stmt.setInt(2, batchId); stmt.executeUpdate();
         } catch (Exception e) {}
     }
 
-    // === 5. BATCH HISTORY & DOWNLOAD ===
-    @GetMapping("/batches")
-    public ResponseEntity<List<Map<String, Object>>> getBatches(@RequestParam("email") String email) {
-        List<Map<String, Object>> batches = new ArrayList<>();
-        try (Connection conn = dataSource.getConnection()) {
-            PreparedStatement stmt = conn.prepareStatement("SELECT id, status, created_at, total_rows, processed_rows FROM batches WHERE user_id = (SELECT id FROM users WHERE email = ?) ORDER BY created_at DESC");
-            stmt.setString(1, email);
-            ResultSet rs = stmt.executeQuery();
-            while (rs.next()) {
-                Map<String, Object> batch = new HashMap<>();
-                batch.put("id", rs.getInt("id"));
-                batch.put("status", rs.getString("status"));
-                batch.put("created_at", rs.getTimestamp("created_at").toString());
-                batch.put("total_rows", rs.getInt("total_rows"));
-                batch.put("processed_rows", rs.getInt("processed_rows"));
-                batches.add(batch);
-            }
-        } catch (Exception e) {}
-        return ResponseEntity.ok(batches);
+    private void sendCompletionEmail(String email, int batchId, int total) {
+        // SendGrid implementation
+        Email from = new Email("noreply@smartgeocode.io");
+        Email to = new Email(email);
+        String subject = "Batch Processing Complete";
+        String body = "Your batch #" + batchId + " is done. Processed " + total + " rows.\n\nLogin to download: https://geocode-frontend.smartgeocode.io";
+        Content content = new Content("text/plain", body);
+        Mail mail = new Mail(from, subject, to, content);
+        try {
+            SendGrid sg = new SendGrid(SENDGRID_API_KEY);
+            Request request = new Request();
+            request.setMethod(Method.POST);
+            request.setEndpoint("mail/send");
+            request.setBody(mail.build());
+            sg.api(request);
+        } catch (Exception e) { e.printStackTrace(); }
     }
 
+    // === 5. ENDPOINTS FOR FRONTEND ===
+    
+    // Helper: Parse partial CSV for live table
     @GetMapping("/batch/{id}")
     public ResponseEntity<Map<String, Object>> getBatchStatus(@PathVariable int id, @RequestParam("email") String email) {
         try (Connection conn = dataSource.getConnection()) {
-            PreparedStatement stmt = conn.prepareStatement("SELECT b.status, b.results, b.total_rows, b.processed_rows FROM batches b JOIN users u ON b.user_id = u.id WHERE b.id = ? AND u.email = ?");
-            stmt.setInt(1, id);
-            stmt.setString(2, email);
+            PreparedStatement stmt = conn.prepareStatement("SELECT status, results, total_rows, processed_rows FROM batches b JOIN users u ON b.user_id = u.id WHERE b.id = ? AND u.email = ?");
+            stmt.setInt(1, id); stmt.setString(2, email);
             ResultSet rs = stmt.executeQuery();
             if (rs.next()) {
-                String status = rs.getString("status");
-                int total = rs.getInt("total_rows");
-                int processed = rs.getInt("processed_rows");
                 Map<String, Object> response = new HashMap<>();
-                response.put("status", status);
-                response.put("progress", total == 0 ? 0 : (int)((double)processed / total * 100));
-                if ("complete".equals(status)) {
-                    String fullCsv = rs.getString("results");
-                    if (fullCsv != null) {
-                        String[] lines = fullCsv.split("\n");
-                        List<String> preview = new ArrayList<>();
-                        for(int i=0; i<Math.min(lines.length, 6); i++) preview.add(lines[i]);
-                        response.put("preview", preview);
+                response.put("status", rs.getString("status"));
+                response.put("totalRows", rs.getInt("total_rows"));
+                response.put("processedRows", rs.getInt("processed_rows"));
+                
+                String resCsv = rs.getString("results");
+                if (resCsv != null && !resCsv.isEmpty()) {
+                    // Send up to 50 lines for live preview
+                    String[] lines = resCsv.split("\n");
+                    List<Map<String, String>> preview = new ArrayList<>();
+                    // Skip header (index 0)
+                    for(int i=1; i<Math.min(lines.length, 51); i++) {
+                        String[] cols = lines[i].split("\",\""); // Basic CSV split
+                        if(cols.length >= 4) {
+                            preview.add(Map.of(
+                                "address", cols[0].replace("\"", ""), 
+                                "lat", cols[1], 
+                                "lng", cols[2], 
+                                "status", cols[4].replace("\"", "")
+                            ));
+                        }
                     }
-                    response.put("downloadUrl", "/api/batch/" + id + "/download?email=" + email);
+                    response.put("preview", preview);
                 }
                 return ResponseEntity.ok(response);
             }
-            return ResponseEntity.status(404).body(Map.of("status", "error", "message", "Batch not found"));
-        } catch (Exception e) { return ResponseEntity.status(500).body(Map.of("status", "error")); }
+        } catch (Exception e) {}
+        return ResponseEntity.notFound().build();
+    }
+
+    @GetMapping("/batches")
+    public ResponseEntity<List<Map<String, Object>>> getBatches(@RequestParam("email") String email) {
+        List<Map<String, Object>> list = new ArrayList<>();
+        try (Connection conn = dataSource.getConnection()) {
+            PreparedStatement stmt = conn.prepareStatement("SELECT id, status, created_at FROM batches WHERE user_id = (SELECT id FROM users WHERE email = ?) ORDER BY created_at DESC");
+            stmt.setString(1, email);
+            ResultSet rs = stmt.executeQuery();
+            while(rs.next()) list.add(Map.of("id", rs.getInt("id"), "status", rs.getString("status"), "created_at", rs.getTimestamp("created_at").toString()));
+        } catch(Exception e){}
+        return ResponseEntity.ok(list);
     }
 
     @GetMapping("/batch/{id}/download")
     public ResponseEntity<byte[]> downloadBatch(@PathVariable int id, @RequestParam("email") String email) {
         try (Connection conn = dataSource.getConnection()) {
             PreparedStatement stmt = conn.prepareStatement("SELECT results FROM batches b JOIN users u ON b.user_id = u.id WHERE b.id = ? AND u.email = ?");
-            stmt.setInt(1, id);
-            stmt.setString(2, email);
+            stmt.setInt(1, id); stmt.setString(2, email);
             ResultSet rs = stmt.executeQuery();
             if (rs.next()) {
                 return ResponseEntity.ok()
-                    .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"geocoded_results_" + id + ".csv\"")
+                    .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"batch_" + id + ".csv\"")
                     .contentType(MediaType.parseMediaType("text/csv"))
                     .body(rs.getString("results").getBytes(StandardCharsets.UTF_8));
             }
@@ -488,60 +463,100 @@ public class GeocodeController {
         return ResponseEntity.notFound().build();
     }
 
-    // === 6. PASSWORD RECOVERY ===
-    @PostMapping("/forgot-password")
-    public ResponseEntity<Map<String, Object>> forgotPassword(@RequestBody Map<String, String> request) {
-        String email = request.get("email");
-        if (email == null) return ResponseEntity.badRequest().body(Map.of("status", "error", "message", "Missing email"));
+    // === 6. AUTH, EMAIL & ADMIN (Existing) ===
+    @PostMapping("/login")
+    public ResponseEntity<Map<String, Object>> login(@RequestBody Map<String, String> creds) {
         try (Connection conn = dataSource.getConnection()) {
-            PreparedStatement stmt = conn.prepareStatement("SELECT id FROM users WHERE email = ?");
-            stmt.setString(1, email);
-            if (!stmt.executeQuery().next()) return ResponseEntity.status(404).body(Map.of("status", "error", "message", "Email not found"));
-            String token = UUID.randomUUID().toString();
-            PreparedStatement update = conn.prepareStatement("UPDATE users SET reset_token = ? WHERE email = ?");
-            update.setString(1, token);
-            update.setString(2, email);
-            update.executeUpdate();
-            
-            // Send Reset Email
-            SendGrid sg = new SendGrid(SENDGRID_API_KEY);
-            Email from = new Email("noreply@smartgeocode.io");
-            Email to = new Email(email);
-            Content content = new Content("text/html", "<h2>Reset Your Password</h2><p>Click <a href='https://geocode-frontend.smartgeocode.io/reset-password?token=" + token + "'>here</a> to reset. Expires soon.</p>");
-            Mail mail = new Mail(from, "Password Reset", to, content);
-            try {
-                Request r = new Request();
-                r.setMethod(Method.POST);
-                r.setEndpoint("mail/send");
-                r.setBody(mail.build());
-                sg.api(r);
-            } catch (Exception ex) { System.err.println("Email Error: " + ex.getMessage()); }
-
-            return ResponseEntity.ok(Map.of("status", "success", "message", "Reset link sent"));
-        } catch (Exception e) { return ResponseEntity.status(500).body(Map.of("status", "error")); }
-    }
-
-    @PostMapping("/reset-password")
-    public ResponseEntity<Map<String, Object>> resetPassword(@RequestBody Map<String, String> request) {
-        String token = request.get("token");
-        String newPassword = request.get("password");
-        try (Connection conn = dataSource.getConnection()) {
-            PreparedStatement stmt = conn.prepareStatement("SELECT email FROM users WHERE reset_token = ?");
-            stmt.setString(1, token);
+            PreparedStatement stmt = conn.prepareStatement("SELECT id, password_hash FROM users WHERE email = ?");
+            stmt.setString(1, creds.get("email"));
             ResultSet rs = stmt.executeQuery();
-            if (rs.next()) {
-                String email = rs.getString("email");
-                PreparedStatement update = conn.prepareStatement("UPDATE users SET password_hash = ?, reset_token = NULL WHERE email = ?");
-                update.setString(1, encoder.encode(newPassword));
-                update.setString(2, email);
-                update.executeUpdate();
-                return ResponseEntity.ok(Map.of("status", "success", "message", "Password updated"));
+            if (rs.next() && encoder.matches(creds.get("password"), rs.getString("password_hash"))) {
+                int userId = rs.getInt("id");
+                return ResponseEntity.ok(Map.of("status", "success", "token", generateToken(creds.get("email"), userId), "userId", userId));
             }
-            return ResponseEntity.status(400).body(Map.of("status", "error", "message", "Invalid token"));
+            return ResponseEntity.status(401).body(Map.of("status", "error", "message", "Invalid credentials"));
         } catch (Exception e) { return ResponseEntity.status(500).body(Map.of("status", "error", "message", "Error")); }
     }
 
-    // === 7. ADMIN & UTILS ===
+    @PostMapping("/email")
+    public ResponseEntity<String> sendEmail(@RequestBody Map<String, Object> payload) {
+        String email = (String) payload.get("email");
+        String address = (String) payload.get("address");
+        Map<String, Object> result = (Map<String, Object>) payload.get("result");
+        
+        // 1. Capture Lead
+        try (Connection conn = dataSource.getConnection()) {
+            PreparedStatement check = conn.prepareStatement("SELECT id FROM users WHERE email = ?");
+            check.setString(1, email);
+            if (!check.executeQuery().next()) {
+                String randomPass = UUID.randomUUID().toString();
+                PreparedStatement insert = conn.prepareStatement("INSERT INTO users (email, password_hash, subscription_status) VALUES (?, ?, 'lead')");
+                insert.setString(1, email);
+                insert.setString(2, encoder.encode(randomPass));
+                insert.executeUpdate();
+            }
+        } catch (Exception e) {}
+
+        // 2. Send Email
+        Email from = new Email("noreply@smartgeocode.io");
+        Email to = new Email(email);
+        String link = "https://geocode-frontend.smartgeocode.io/signup?email=" + email;
+        String body = "Results for: " + address + "\n\nLat: " + result.get("lat") + "\nLng: " + result.get("lng") + 
+                      "\n\nClaim account: " + link;
+        Content content = new Content("text/plain", body);
+        Mail mail = new Mail(from, "Your Geocode Results", to, content);
+        try {
+            SendGrid sg = new SendGrid(SENDGRID_API_KEY);
+            Request request = new Request();
+            request.setMethod(Method.POST);
+            request.setEndpoint("mail/send");
+            request.setBody(mail.build());
+            sg.api(request);
+            return ResponseEntity.ok("Email sent");
+        } catch (Exception e) { return ResponseEntity.status(500).body("Email failed"); }
+    }
+
+    @PostMapping("/signup")
+    public ResponseEntity<Map<String, Object>> signup(@RequestBody Map<String, String> creds) {
+        String email = creds.get("email");
+        String password = creds.get("password");
+        try (Connection conn = dataSource.getConnection()) {
+            PreparedStatement check = conn.prepareStatement("SELECT id, subscription_status FROM users WHERE email = ?");
+            check.setString(1, email);
+            ResultSet rs = check.executeQuery();
+            if (rs.next()) {
+                if ("lead".equals(rs.getString("subscription_status"))) {
+                    PreparedStatement update = conn.prepareStatement("UPDATE users SET password_hash = ?, subscription_status = 'free' WHERE email = ?");
+                    update.setString(1, encoder.encode(password));
+                    update.setString(2, email);
+                    update.executeUpdate();
+                    int userId = rs.getInt("id");
+                    return ResponseEntity.ok(Map.of("status", "success", "token", generateToken(email, userId), "userId", userId));
+                }
+                return ResponseEntity.status(400).body(Map.of("status", "error", "message", "Email exists. Please log in."));
+            }
+            PreparedStatement insert = conn.prepareStatement("INSERT INTO users (email, password_hash) VALUES (?, ?)", Statement.RETURN_GENERATED_KEYS);
+            insert.setString(1, email);
+            insert.setString(2, encoder.encode(password));
+            insert.executeUpdate();
+            ResultSet keys = insert.getGeneratedKeys();
+            keys.next();
+            int userId = keys.getInt(1);
+            return ResponseEntity.ok(Map.of("status", "success", "token", generateToken(email, userId), "userId", userId));
+        } catch (Exception e) { return ResponseEntity.status(500).body(Map.of("status", "error", "message", e.getMessage())); }
+    }
+
+    // === UTILS ===
+    private boolean allColumnsEmpty(String[] line) {
+        if (line == null) return true;
+        for(String s : line) if(s != null && !s.trim().isEmpty()) return false;
+        return true;
+    }
+    
+    private String generateToken(String email, int userId) {
+        return Jwts.builder().setSubject(email).claim("userId", userId).setIssuedAt(new Date()).setExpiration(new Date(System.currentTimeMillis() + 604800000)).signWith(SignatureAlgorithm.HS256, JWT_SECRET).compact();
+    }
+    
     @GetMapping("/usage")
     public ResponseEntity<Map<String, Integer>> getUsage(@RequestHeader(value = "Authorization", required = false) String authHeader) {
         Long userId = extractUserId(authHeader);
@@ -559,48 +574,30 @@ public class GeocodeController {
         } catch (Exception e) { return ResponseEntity.status(500).body(Map.of("message", "Error")); }
     }
     
-    // Manual DB Init
-    @PostMapping("/init-db")
-    public ResponseEntity<String> initDb() {
-        initDatabase(); // Reuse the post-construct logic
-        return ResponseEntity.ok("DB initialized");
-    }
-
-    // Admin Tools
-    private static class PremiumRequest {
-        private String email;
-        @JsonCreator public PremiumRequest(@JsonProperty("email") String email) { this.email = email; }
-        public String getEmail() { return email; }
-    }
-
-    @PostMapping("/set-premium")
-    public ResponseEntity<String> setPremium(@RequestBody PremiumRequest request) {
-        try (Connection conn = dataSource.getConnection()) {
-            PreparedStatement stmt = conn.prepareStatement("UPDATE users SET subscription_status = 'premium' WHERE email = ?");
-            stmt.setString(1, request.getEmail());
-            if (stmt.executeUpdate() > 0) return ResponseEntity.ok("Premium activated");
-            return ResponseEntity.status(404).body("User not found");
-        } catch (Exception e) { return ResponseEntity.status(500).body("Error"); }
-    }
-
-    @GetMapping("/activate-premium")
-    public String activatePremium(@RequestParam("email") String email) {
-        try (Connection conn = dataSource.getConnection()) {
-            PreparedStatement stmt = conn.prepareStatement("UPDATE users SET subscription_status = 'premium' WHERE email = ?");
-            stmt.setString(1, email);
-            if (stmt.executeUpdate() > 0) return "Premium activated for " + email;
-            return "User not found";
-        } catch (Exception e) { return "Error"; }
-    }
-
     @GetMapping("/test-db")
     public String testDbConnection() {
         try (Connection conn = dataSource.getConnection()) {
             return "Connection successful: " + conn.getMetaData().getURL();
         } catch (Exception e) { return "Connection failed: " + e.getMessage(); }
     }
-
-    // === 8. STRIPE & PAYMENTS ===
+    
+    @PostMapping("/create-portal-session")
+    public ResponseEntity<Map<String, Object>> createPortalSession(@RequestBody Map<String, String> payload) {
+        Stripe.apiKey = System.getenv("STRIPE_SUB_SECRET_KEY");
+        try (Connection conn = dataSource.getConnection()) {
+            PreparedStatement stmt = conn.prepareStatement("SELECT stripe_customer_id FROM users WHERE email = ?");
+            stmt.setString(1, payload.get("email"));
+            ResultSet rs = stmt.executeQuery();
+            if (rs.next() && rs.getString("stripe_customer_id") != null) {
+                com.stripe.param.billingportal.SessionCreateParams params = com.stripe.param.billingportal.SessionCreateParams.builder()
+                    .setCustomer(rs.getString("stripe_customer_id"))
+                    .setReturnUrl("https://geocode-frontend.smartgeocode.io/dashboard").build();
+                return ResponseEntity.ok(Map.of("url", com.stripe.model.billingportal.Session.create(params).getUrl()));
+            }
+            return ResponseEntity.status(400).body(Map.of("error", "No subscription"));
+        } catch (Exception e) { return ResponseEntity.status(500).body(Map.of("error", e.getMessage())); }
+    }
+    
     @PostMapping("/checkout")
     public ResponseEntity<Map<String, Object>> createCheckoutSession(@RequestBody Map<String, String> payload) {
         String checkoutKey = System.getenv("STRIPE_CKOUT_SECRET_KEY");
@@ -620,24 +617,6 @@ public class GeocodeController {
             return ResponseEntity.ok(Map.of("url", com.stripe.model.checkout.Session.create(params).getUrl()));
         } catch (Exception e) { return ResponseEntity.status(500).body(Map.of("error", e.getMessage())); }
     }
-
-    @PostMapping("/create-portal-session")
-    public ResponseEntity<Map<String, Object>> createPortalSession(@RequestBody Map<String, String> payload) {
-        Stripe.apiKey = System.getenv("STRIPE_SUB_SECRET_KEY");
-        try (Connection conn = dataSource.getConnection()) {
-            PreparedStatement stmt = conn.prepareStatement("SELECT stripe_customer_id FROM users WHERE email = ?");
-            stmt.setString(1, payload.get("email"));
-            ResultSet rs = stmt.executeQuery();
-            if (rs.next() && rs.getString("stripe_customer_id") != null) {
-                com.stripe.param.billingportal.SessionCreateParams params = com.stripe.param.billingportal.SessionCreateParams.builder()
-                    .setCustomer(rs.getString("stripe_customer_id"))
-                    .setReturnUrl("https://geocode-frontend.smartgeocode.io/dashboard").build();
-                return ResponseEntity.ok(Map.of("url", com.stripe.model.billingportal.Session.create(params).getUrl()));
-            }
-            return ResponseEntity.status(400).body(Map.of("error", "No subscription"));
-        } catch (Exception e) { return ResponseEntity.status(500).body(Map.of("error", e.getMessage())); }
-    }
-
     @PostMapping("/stripe-webhook")
     public ResponseEntity<String> stripeWebhook(@RequestBody String payload, @RequestHeader("Stripe-Signature") String sigHeader) {
         String webhookSecret = System.getenv("STRIPE_WEBHOOK_SECRET");
@@ -663,8 +642,5 @@ public class GeocodeController {
         } catch (Exception e) { return ResponseEntity.status(400).body("Error"); }
     }
 
-    // UTILS
-    private String generateToken(String email, int userId) {
-        return Jwts.builder().setSubject(email).claim("userId", userId).setIssuedAt(new Date()).setExpiration(new Date(System.currentTimeMillis() + 604800000)).signWith(SignatureAlgorithm.HS256, JWT_SECRET).compact();
-    }
+   
 }

@@ -1,9 +1,10 @@
 import type { Metadata } from 'next';
 import { Inter } from 'next/font/google';
 import './globals.css';
-import ClientHeader from './ClientHeader';
+import ClientHeader from './ClientHeader'; // Ensure path is correct relative to layout.tsx
 import Script from 'next/script';
 import Image from 'next/image';
+import Link from 'next/link'; // Added Link import
 
 const inter = Inter({ subsets: ['latin'] });
 
@@ -29,7 +30,8 @@ export default function RootLayout({
       <body className={inter.className}>
         <header className="bg-red-600 text-white p-5 shadow-lg">
           <div className="max-w-6xl mx-auto flex items-center justify-between">
-            <div className="flex items-center space-x-4">
+            {/* FIXED: Wrapped Logo in Link to Home */}
+            <Link href="/" className="flex items-center space-x-4 cursor-pointer hover:opacity-90 transition-opacity">
               <Image
                 src="/images/logo.png"
                 alt="Smartgeocode Logo"
@@ -39,7 +41,8 @@ export default function RootLayout({
                 className="rounded-full"
               />
               <h1 className="text-3xl font-bold">Smartgeocode</h1>
-            </div>
+            </Link>
+            
             <ClientHeader />
           </div>
         </header>

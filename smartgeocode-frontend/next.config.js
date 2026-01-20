@@ -1,36 +1,30 @@
-
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-  // Force fresh loads in development
+  // 1. Force fresh loads in dev (Keep existing settings)
   devIndicators: {
     buildActivity: true,
   },
-  /*async redirects() {
-  return [
-    {
-      source: '/',
-      destination: '/dashboard',
-      permanent: true,
-    },
-  ];
-},*/
+
+  // 2. THE BRIDGE (Fixes Network Error)
+  async rewrites() {
+    return [
+      {
+        source: '/api/:path*',
+        // This sends all /api requests to your Railway Backend
+        destination: 'https://api-java-production-fb09.up.railway.app/api/:path*', 
+      },
+    ];
+  },
+
+  // 3. Caching Headers (Keep existing settings)
   async headers() {
     return [
       {
         source: '/:path*',
         headers: [
-          {
-            key: 'Cache-Control',
-            value: 'no-store, no-cache, must-revalidate, proxy-revalidate',
-          },
-          {
-            key: 'Pragma',
-            value: 'no-cache',
-          },
-          {
-            key: 'Expires',
-            value: '0',
-          },
+          { key: 'Cache-Control', value: 'no-store, no-cache, must-revalidate, proxy-revalidate' },
+          { key: 'Pragma', value: 'no-cache' },
+          { key: 'Expires', value: '0' },
         ],
       },
     ];

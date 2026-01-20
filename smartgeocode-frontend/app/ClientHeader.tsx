@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
+import Link from 'next/link'; // Use Next.js Link for speed
 
 export default function ClientHeader() {
   const [isLoggedIn, setIsLoggedIn] = useState(false);
@@ -17,13 +18,10 @@ export default function ClientHeader() {
       }
     };
 
-    checkAuth(); // Initial check
+    checkAuth();
 
-    // Listen for cross-tab changes
     window.addEventListener('storage', checkAuth);
-
-    // Short poll for immediate redirect (from /success)
-    const interval = setInterval(checkAuth, 500);
+    const interval = setInterval(checkAuth, 1000); // Relaxed poll to 1s
 
     return () => {
       window.removeEventListener('storage', checkAuth);
@@ -33,14 +31,17 @@ export default function ClientHeader() {
 
   const logout = () => {
     localStorage.clear();
-    window.location.href = 'https://smartgeocode.io';
+    // Redirect to home page after logout
+    window.location.href = '/'; 
   };
 
   return (
     <div className="flex items-center space-x-6">
       {isLoggedIn ? (
         <>
-          <p className="text-lg font-medium">Welcome, {email}!</p>
+          <Link href="/success" className="text-lg font-medium hover:underline">
+             Dashboard ({email})
+          </Link>
           <button
             onClick={logout}
             className="bg-white text-red-600 px-6 py-2 rounded-lg font-semibold hover:bg-gray-100 transition"
@@ -49,12 +50,13 @@ export default function ClientHeader() {
           </button>
         </>
       ) : (
-        <a
-          href="/success"
+        // FIXED: Points to /signup instead of /success for login
+        <Link
+          href="/signup"
           className="bg-white text-red-600 px-6 py-2 rounded-lg font-semibold hover:bg-gray-100 transition"
         >
           Log In
-        </a>
+        </Link>
       )}
     </div>
   );

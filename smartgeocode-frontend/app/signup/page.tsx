@@ -39,7 +39,7 @@ function SignupForm() {
         // SUCCESS: "Lead" converted to "User", or "New User" created.
         localStorage.setItem('email', normalizedEmail);
         localStorage.setItem('token', data.token); // Save token if backend sends it
-        router.push('/success'); 
+        window.location.href = '/dashboard';
       } else {
         // ERROR HANDLING
         const msg = data.message?.toLowerCase() || '';

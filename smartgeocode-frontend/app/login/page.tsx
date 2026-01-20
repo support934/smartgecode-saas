@@ -4,7 +4,6 @@ import { useState, useEffect, Suspense } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 
-// Part 1: The Logic Component (Uses Search Params)
 function LoginForm() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -38,10 +37,13 @@ function LoginForm() {
       const data = await res.json();
 
       if (res.ok) {
+        // Save token
         localStorage.setItem('token', data.token);
         localStorage.setItem('email', email.toLowerCase().trim());
         localStorage.setItem('userId', data.userId);
-        window.location.href = '/success'; 
+        
+        // 🟢 CRITICAL FIX: Redirect to Dashboard, NOT Success
+        window.location.href = '/dashboard'; 
       } else {
         setError(data.message || 'Invalid email or password');
       }
@@ -109,7 +111,7 @@ function LoginForm() {
   );
 }
 
-// Part 2: The Build-Safe Wrapper (Default Export)
+// Build-Safe Wrapper
 export default function LoginPage() {
   return (
     <Suspense fallback={<div className="min-h-screen flex items-center justify-center">Loading...</div>}>

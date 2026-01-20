@@ -129,7 +129,7 @@ public class GeocodeController {
         }
     }
 
-    // === 1. SINGLE LOOKUP (Keep simple logic here) ===
+    // === 1. SINGLE LOOKUP ===
     @GetMapping("/geocode")
     public Map<String, Object> geocode(@RequestParam("address") String addr, @RequestHeader(value = "Authorization", required = false) String authHeader) {
         if (addr == null || addr.isEmpty()) return Map.of("status", "error", "message", "Missing address");
@@ -139,7 +139,6 @@ public class GeocodeController {
             return Map.of("status", "error", "message", "Monthly limit reached. Upgrade to Premium.");
         }
 
-        // Use the smart logic even for single lookups if they contain commas
         Map<String, Object> result = performGeocodeRequest(addr);
         
         if ("success".equals(result.get("status"))) {
@@ -148,7 +147,7 @@ public class GeocodeController {
         return result;
     }
 
-    // === 2. BATCH GEOCODE (THE HEAVY LIFTER) ===
+    // === 2. BATCH GEOCODE ===
     @PostMapping(value = "/batch-geocode", consumes = "multipart/form-data")
     public ResponseEntity<Map<String, Object>> batchGeocode(@RequestParam("file") MultipartFile file, @RequestParam("email") String email, @RequestHeader(value = "Authorization", required = false) String authHeader) {
         Long tokenUserId = extractUserId(authHeader);
@@ -208,7 +207,6 @@ public class GeocodeController {
     // === 3. THE "IRON CLAD" LOGIC ENGINE ===
     private void processBatchLogic(int batchId, Long userId, List<String[]> rows, String email) {
         StringBuilder csvOutput = new StringBuilder();
-        // Add headers for result CSV
         csvOutput.append("input_address,lat,lng,formatted_address,status,match_type\n");
         
         String[] headers = null;
@@ -223,7 +221,6 @@ public class GeocodeController {
                 for(int i=0; i<headers.length; i++) {
                     colMap.put(headers[i].toLowerCase().trim(), i);
                 }
-                // Validate required columns
                 if (!colMap.containsKey("address") && !colMap.containsKey("landmark")) {
                     failBatch(batchId, "CSV must contain 'address' or 'landmark' column");
                     return;
@@ -239,42 +236,41 @@ public class GeocodeController {
             String city = getVal(line, colMap, "city");
             String state = getVal(line, colMap, "state");
             String country = getVal(line, colMap, "country");
-            String zip = getVal(line, colMap, "zip");
-
+            
             Map<String, Object> result = Map.of("status", "error");
             String matchType = "none";
 
-            // --- WATERFALL STRATEGY (High Accuracy) ---
+            // --- WATERFALL STRATEGY ---
             
-            // Attempt 1: Landmark + City + Country (Best for famous places)
+            // Attempt 1: Landmark + Context
             if (!landmark.isEmpty()) {
                 String q = buildQuery(landmark, city, state, country);
                 result = performGeocodeRequest(q);
                 if ("success".equals(result.get("status"))) matchType = "landmark_context";
             }
 
-            // Attempt 2: Address + City + State + Zip (Standard Postal)
+            // Attempt 2: Address + Context
             if (!"success".equals(result.get("status")) && !address.isEmpty()) {
                 String q = buildQuery(address, city, state, country);
                 result = performGeocodeRequest(q);
                 if ("success".equals(result.get("status"))) matchType = "address_context";
             }
 
-            // Attempt 3: Landmark Only (Global search)
+            // Attempt 3: Landmark Only
             if (!"success".equals(result.get("status")) && !landmark.isEmpty()) {
                 result = performGeocodeRequest(landmark);
                 if ("success".equals(result.get("status"))) matchType = "landmark_only";
             }
 
-            // Attempt 4: Address Only (Fallback)
+            // Attempt 4: Address Only
             if (!"success".equals(result.get("status")) && !address.isEmpty()) {
                 result = performGeocodeRequest(address);
                 if ("success".equals(result.get("status"))) matchType = "address_only";
             }
 
-            // Attempt 5: City/Zip Fallback (Last resort)
+            // Attempt 5: City Fallback
             if (!"success".equals(result.get("status"))) {
-                 String q = buildQuery("", city, state, country); // Just city/country
+                 String q = buildQuery("", city, state, country);
                  if (!q.isEmpty()) {
                      result = performGeocodeRequest(q);
                      if ("success".equals(result.get("status"))) matchType = "city_fallback";
@@ -293,17 +289,14 @@ public class GeocodeController {
             );
             csvOutput.append(rowString);
 
-            // 4. Update Usage & DB (LIVE UPDATE)
             if ("success".equals(result.get("status"))) lookupService.incrementLookup(userId, 1);
 
-            // CRITICAL: Update DB every row so frontend polling sees live data
+            // CRITICAL: Update DB for live preview
             updateBatchProgress(batchId, processed, csvOutput.toString());
             
-            // 5. Rate Limit Delay
             try { Thread.sleep(API_DELAY_MS); } catch (InterruptedException ignored) {}
         }
 
-        // Finalize
         finishBatch(batchId, csvOutput.toString(), processed);
         sendCompletionEmail(email, batchId, processed);
     }
@@ -330,7 +323,6 @@ public class GeocodeController {
             
             String encoded = query.replace(" ", "+").replace(",", "%2C");
             String email = System.getenv("NOMINATIM_EMAIL") != null ? System.getenv("NOMINATIM_EMAIL") : "admin@smartgeocode.io";
-            // Use q= for flexible search
             String url = "https://nominatim.openstreetmap.org/search?format=json&email=" + email + "&q=" + encoded + "&limit=1";
             
             HttpResponse<String> response = client.send(HttpRequest.newBuilder().uri(URI.create(url)).header("User-Agent", "SmartGeocode/1.0").build(), HttpResponse.BodyHandlers.ofString());
@@ -346,18 +338,15 @@ public class GeocodeController {
         return Map.of("status", "error");
     }
 
-    // === 4. DB UPDATE HELPERS (LIVE) ===
+    // === 4. DB UPDATE HELPERS ===
     private void updateBatchProgress(int batchId, int count, String partialCsv) {
         try (Connection conn = dataSource.getConnection()) {
-            // Update BOTH processed count AND the results text for live preview
             PreparedStatement stmt = conn.prepareStatement("UPDATE batches SET processed_rows = ?, results = ? WHERE id = ?");
             stmt.setInt(1, count);
             stmt.setString(2, partialCsv);
             stmt.setInt(3, batchId);
             stmt.executeUpdate();
-        } catch (Exception e) {
-            e.printStackTrace();
-        }
+        } catch (Exception e) { e.printStackTrace(); }
     }
 
     private void finishBatch(int batchId, String csv, int total) {
@@ -378,11 +367,10 @@ public class GeocodeController {
     }
 
     private void sendCompletionEmail(String email, int batchId, int total) {
-        // SendGrid implementation
         Email from = new Email("noreply@smartgeocode.io");
         Email to = new Email(email);
         String subject = "Batch Processing Complete";
-        String body = "Your batch #" + batchId + " is done. Processed " + total + " rows.\n\nLogin to download: https://geocode-frontend.smartgeocode.io";
+        String body = "Batch #" + batchId + " complete. " + total + " rows processed.\nDownload: https://geocode-frontend.smartgeocode.io";
         Content content = new Content("text/plain", body);
         Mail mail = new Mail(from, subject, to, content);
         try {
@@ -396,8 +384,6 @@ public class GeocodeController {
     }
 
     // === 5. ENDPOINTS FOR FRONTEND ===
-    
-    // Helper: Parse partial CSV for live table
     @GetMapping("/batch/{id}")
     public ResponseEntity<Map<String, Object>> getBatchStatus(@PathVariable int id, @RequestParam("email") String email) {
         try (Connection conn = dataSource.getConnection()) {
@@ -412,19 +398,12 @@ public class GeocodeController {
                 
                 String resCsv = rs.getString("results");
                 if (resCsv != null && !resCsv.isEmpty()) {
-                    // Send up to 50 lines for live preview
                     String[] lines = resCsv.split("\n");
                     List<Map<String, String>> preview = new ArrayList<>();
-                    // Skip header (index 0)
                     for(int i=1; i<Math.min(lines.length, 51); i++) {
-                        String[] cols = lines[i].split("\",\""); // Basic CSV split
+                        String[] cols = lines[i].split("\",\"");
                         if(cols.length >= 4) {
-                            preview.add(Map.of(
-                                "address", cols[0].replace("\"", ""), 
-                                "lat", cols[1], 
-                                "lng", cols[2], 
-                                "status", cols[4].replace("\"", "")
-                            ));
+                            preview.add(Map.of("address", cols[0].replace("\"", ""), "lat", cols[1], "lng", cols[2], "status", cols[4].replace("\"", "")));
                         }
                     }
                     response.put("preview", preview);
@@ -463,7 +442,7 @@ public class GeocodeController {
         return ResponseEntity.notFound().build();
     }
 
-    // === 6. AUTH, EMAIL & ADMIN (Existing) ===
+    // === 6. AUTH, EMAIL & ADMIN ===
     @PostMapping("/login")
     public ResponseEntity<Map<String, Object>> login(@RequestBody Map<String, String> creds) {
         try (Connection conn = dataSource.getConnection()) {
@@ -484,7 +463,6 @@ public class GeocodeController {
         String address = (String) payload.get("address");
         Map<String, Object> result = (Map<String, Object>) payload.get("result");
         
-        // 1. Capture Lead
         try (Connection conn = dataSource.getConnection()) {
             PreparedStatement check = conn.prepareStatement("SELECT id FROM users WHERE email = ?");
             check.setString(1, email);
@@ -497,7 +475,6 @@ public class GeocodeController {
             }
         } catch (Exception e) {}
 
-        // 2. Send Email
         Email from = new Email("noreply@smartgeocode.io");
         Email to = new Email(email);
         String link = "https://geocode-frontend.smartgeocode.io/signup?email=" + email;
@@ -608,7 +585,7 @@ public class GeocodeController {
                 .setMode(com.stripe.param.checkout.SessionCreateParams.Mode.SUBSCRIPTION)
                 .addPaymentMethodType(com.stripe.param.checkout.SessionCreateParams.PaymentMethodType.CARD)
                 .addLineItem(com.stripe.param.checkout.SessionCreateParams.LineItem.builder()
-                    .setPrice("price_1Sd8JxA5JR9NQZvD0GCmjm6R") // Replace with actual Price ID
+                    .setPrice("price_1Sd8JxA5JR9NQZvD0GCmjm6R") 
                     .setQuantity(1L).build())
                 .setCustomerEmail(email)
                 .setSuccessUrl("https://geocode-frontend.smartgeocode.io/success?session_id={CHECKOUT_SESSION_ID}")
@@ -617,6 +594,7 @@ public class GeocodeController {
             return ResponseEntity.ok(Map.of("url", com.stripe.model.checkout.Session.create(params).getUrl()));
         } catch (Exception e) { return ResponseEntity.status(500).body(Map.of("error", e.getMessage())); }
     }
+    
     @PostMapping("/stripe-webhook")
     public ResponseEntity<String> stripeWebhook(@RequestBody String payload, @RequestHeader("Stripe-Signature") String sigHeader) {
         String webhookSecret = System.getenv("STRIPE_WEBHOOK_SECRET");
@@ -641,6 +619,4 @@ public class GeocodeController {
             return ResponseEntity.ok("Received");
         } catch (Exception e) { return ResponseEntity.status(400).body("Error"); }
     }
-
-   
 }

@@ -10,7 +10,7 @@ const nextConfig = {
     return [
       {
         source: '/api/:path*',
-        // This sends all /api requests to your Railway Backend
+        // PROXY TARGET: This must be your PUBLIC Railway URL
         destination: 'https://api-java-production-fb09.up.railway.app/api/:path*', 
       },
     ];

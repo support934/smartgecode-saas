@@ -9,7 +9,7 @@ export default function Signup() {
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
-  const [isExistingUser, setIsExistingUser] = useState(false); // NEW STATE
+  const [isExistingUser, setIsExistingUser] = useState(false);
   const router = useRouter();
 
   const handleSignup = async (e: React.FormEvent) => {
@@ -21,7 +21,9 @@ export default function Signup() {
     const normalizedEmail = email.toLowerCase().trim();
 
     try {
-      const res = await fetch('https://smartgeocode.railway.internal/api/signup', { // Ensure this URL matches your setup (e.g., /api/signup if using proxy)
+      // 🛑 FIXED: Changed from 'https://smartgeocode.railway.internal...' to relative path
+      // Next.js will proxy this to your backend automatically.
+      const res = await fetch('/api/signup', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email: normalizedEmail, password }),
@@ -33,17 +35,18 @@ export default function Signup() {
         localStorage.setItem('email', normalizedEmail);
         router.push('/success');
       } else {
-        // INTELLIGENT ERROR HANDLING
-        const msg = data.message || '';
-        if (msg.toLowerCase().includes('email exists') || msg.toLowerCase().includes('already exists')) {
+        // Intelligent Error Handling
+        const msg = data.message?.toLowerCase() || '';
+        if (msg.includes('email') && (msg.includes('exist') || msg.includes('taken') || msg.includes('log in'))) {
             setIsExistingUser(true);
             setError('Account already exists. Please log in.');
         } else {
-            setError(msg || 'Signup failed—try again');
+            setError(data.message || 'Signup failed—try again');
         }
       }
     } catch (err) {
-      setError('Network error—try again');
+      console.error("Signup Error:", err);
+      setError('Network error. Please try again.');
     } finally {
       setLoading(false);
     }
@@ -62,18 +65,17 @@ export default function Signup() {
           </div>
         )}
 
-        {/* If user exists, show BIG Login Button instead of form */}
         {isExistingUser ? (
           <div className="space-y-4">
             <Link 
-              href={`/success?email=${encodeURIComponent(email)}`} // Reuse your Login page (often at /success or /login)
-              className="block w-full bg-red-600 text-white text-center p-3 rounded-lg hover:bg-red-700 font-bold"
+              href="/success" // Assuming /success or /dashboard is your login target
+              className="block w-full bg-red-600 text-white text-center p-3 rounded-lg hover:bg-red-700 font-bold shadow-md"
             >
-              Log In with {email}
+              Log In Now
             </Link>
             <button 
               onClick={() => setIsExistingUser(false)} 
-              className="block w-full text-gray-500 text-sm hover:underline"
+              className="block w-full text-gray-500 text-sm hover:underline py-2"
             >
               Use a different email
             </button>
@@ -106,12 +108,14 @@ export default function Signup() {
           </form>
         )}
 
-        <p className="text-center mt-6 text-sm text-gray-500">
-          Already have an account?{' '}
-          <Link href="/success" className="text-red-600 hover:underline font-semibold">
-            Log in
-          </Link>
-        </p>
+        {!isExistingUser && (
+            <p className="text-center mt-6 text-sm text-gray-500">
+            Already have an account?{' '}
+            <Link href="/success" className="text-red-600 hover:underline font-semibold">
+                Log in
+            </Link>
+            </p>
+        )}
       </div>
     </div>
   );

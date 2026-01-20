@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState } from 'react';
-import Pricing from './components/Pricing';
+import Pricing from './components/Pricing'; // Ensure path is correct
 
 export default function Home() {
   const [address, setAddress] = useState('');
@@ -9,6 +9,7 @@ export default function Home() {
   const [results, setResults] = useState<any>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [successMsg, setSuccessMsg] = useState(''); // NEW: Success state
 
   const handleGeocode = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -16,22 +17,33 @@ export default function Home() {
 
     setLoading(true);
     setError('');
+    setSuccessMsg('');
     setResults(null);
 
     try {
+      // 1. Single Lookup (Proxied to Backend)
       const res = await fetch(`/api/geocode?address=${encodeURIComponent(address)}`);
       const data = await res.json();
+
       if (data.status === 'success') {
         setResults(data);
-        await fetch('/api/email', {
+
+        // 2. Capture Lead & Send Email (Proxied to Backend)
+        const emailRes = await fetch('/api/email', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ email, address, result: data }),
         });
+
+        if (emailRes.ok) {
+           // FEEDBACK: Show the green success box
+           setSuccessMsg(`Success! We sent the results to ${email}. Check your inbox to claim your free account.`);
+        }
       } else {
         setError(data.message || 'Geocoding failed. Please try again.');
       }
     } catch (err) {
+      console.error(err);
       setError('Network error—please check your connection and try again.');
     } finally {
       setLoading(false);
@@ -51,47 +63,62 @@ export default function Home() {
         </a>
       </section>
 
-      {/* Pricing Section - NOW REPLACED WITH COMPONENT */}
+      {/* Pricing Component */}
       <Pricing />
 
-      {/* Single Lookup Form - integrated for free trial */}
+      {/* Single Lookup Form */}
       <section id="lookup-form" style={{ padding: '60px 20px', background: '#f8f9fa', textAlign: 'center' }}>
         <h2 style={{ fontSize: '2em', marginBottom: '30px', color: '#ef4444' }}>Try a Free Single Lookup</h2>
-        <form onSubmit={handleGeocode} style={{ maxWidth: '500px', margin: '0 auto' }}>
-          <input
-            type="text"
-            placeholder="Enter address (e.g., 123 Main St, East Meadow, NY)"
-            value={address}
-            onChange={(e) => setAddress(e.target.value)}
-            style={{ width: '100%', padding: '12px', marginBottom: '10px', borderRadius: '6px', border: '1px solid #ddd' }}
-            required
-          />
-          <input
-            type="email"
-            placeholder="Your email for results"
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            style={{ width: '100%', padding: '12px', marginBottom: '10px', borderRadius: '6px', border: '1px solid #ddd' }}
-            required
-          />
-          <button
-            type="submit"
-            disabled={loading}
-            style={{ width: '100%', background: '#ef4444', color: 'white', padding: '12px', borderRadius: '6px', fontWeight: 'bold', border: 'none', cursor: 'pointer' }}
-          >
-            {loading ? 'Geocoding...' : 'Get Results Now'}
-          </button>
-        </form>
-        {error && <p style={{ color: '#ef4444', marginTop: '10px' }}>{error}</p>}
-        {results && (
-          <div style={{ marginTop: '20px', padding: '20px', background: '#e6ffe6', borderRadius: '6px' }}>
-            <h3>Results</h3>
-            <p>Latitude: {results.lat}</p>
-            <p>Longitude: {results.lng}</p>
-            <p>Formatted Address: {results.formatted_address}</p>
-            <p style={{ fontSize: '0.9em', color: '#666' }}>Emailed to you. Upgrade for batch!</p>
-          </div>
-        )}
+        
+        <div style={{ maxWidth: '500px', margin: '0 auto' }}>
+            <form onSubmit={handleGeocode}>
+                <input
+                    type="text"
+                    placeholder="Enter address (e.g., 123 Main St, New York, NY)"
+                    value={address}
+                    onChange={(e) => setAddress(e.target.value)}
+                    style={{ width: '100%', padding: '12px', marginBottom: '10px', borderRadius: '6px', border: '1px solid #ddd' }}
+                    required
+                />
+                <input
+                    type="email"
+                    placeholder="Your email for results"
+                    value={email}
+                    onChange={(e) => setEmail(e.target.value)}
+                    style={{ width: '100%', padding: '12px', marginBottom: '10px', borderRadius: '6px', border: '1px solid #ddd' }}
+                    required
+                />
+                <button
+                    type="submit"
+                    disabled={loading}
+                    style={{ width: '100%', background: '#ef4444', color: 'white', padding: '12px', borderRadius: '6px', fontWeight: 'bold', border: 'none', cursor: 'pointer' }}
+                >
+                    {loading ? 'Geocoding...' : 'Get Results Now'}
+                </button>
+            </form>
+
+            {/* Error Message */}
+            {error && <p style={{ color: '#ef4444', marginTop: '10px', fontWeight: 'bold' }}>{error}</p>}
+
+            {/* Success Message - The Green Box */}
+            {successMsg && (
+                <div style={{ marginTop: '20px', padding: '15px', background: '#ecfdf5', border: '1px solid #10b981', borderRadius: '6px', color: '#065f46', textAlign: 'left' }}>
+                    <p style={{ fontWeight: 'bold', marginBottom: '5px' }}>✓ Results Sent!</p>
+                    <p style={{ fontSize: '0.9em' }}>{successMsg}</p>
+                </div>
+            )}
+
+            {/* Result Preview */}
+            {results && (
+            <div style={{ marginTop: '20px', padding: '20px', background: '#e6ffe6', borderRadius: '6px', textAlign: 'left' }}>
+                <h3 style={{ marginBottom: '10px', fontWeight: 'bold' }}>Result Preview</h3>
+                <p><strong>Lat:</strong> {results.lat}</p>
+                <p><strong>Lng:</strong> {results.lng}</p>
+                <p><strong>Address:</strong> {results.formatted_address}</p>
+                <p style={{ fontSize: '0.9em', color: '#666', marginTop: '10px' }}>Full details emailed to you.</p>
+            </div>
+            )}
+        </div>
       </section>
 
       {/* Features */}
@@ -99,17 +126,14 @@ export default function Home() {
         <h2 style={{ textAlign: 'center', fontSize: '2.2em', marginBottom: '40px', color: '#ef4444' }}>Why Smartgeocode?</h2>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: '25px', maxWidth: '1200px', margin: '0 auto' }}>
           <div style={{ padding: '25px', borderRadius: '12px', boxShadow: '0 4px 12px rgba(0,0,0,0.08)', textAlign: 'center' }}>
-            <i className="fas fa-bolt" style={{ fontSize: '3em', color: '#ef4444', marginBottom: '15px' }}></i>
             <h3 style={{ fontSize: '1.5em', marginBottom: '10px' }}>Blazing Fast</h3>
             <p>Get accurate coordinates in seconds.</p>
           </div>
           <div style={{ padding: '25px', borderRadius: '12px', boxShadow: '0 4px 12px rgba(0,0,0,0.08)', textAlign: 'center' }}>
-            <i className="fas fa-envelope-open" style={{ fontSize: '3em', color: '#ef4444', marginBottom: '15px' }}></i>
             <h3 style={{ fontSize: '1.5em', marginBottom: '10px' }}>Instant Email</h3>
             <p>Results emailed for easy access.</p>
           </div>
           <div style={{ padding: '25px', borderRadius: '12px', boxShadow: '0 4px 12px rgba(0,0,0,0.08)', textAlign: 'center' }}>
-            <i className="fas fa-rocket" style={{ fontSize: '3em', color: '#ef4444', marginBottom: '15px' }}></i>
             <h3 style={{ fontSize: '1.5em', marginBottom: '10px' }}>Effortless Scaling</h3>
             <p>Upgrade for batch, API, unlimited.</p>
           </div>

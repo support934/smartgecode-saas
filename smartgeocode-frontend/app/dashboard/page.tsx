@@ -8,6 +8,7 @@ import { loadStripe } from '@stripe/stripe-js';
 const stripePromise = loadStripe(process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY!);
 
 export default function Dashboard() {
+  // --- STATE MANAGEMENT ---
   const [subscription, setSubscription] = useState<'free' | 'premium' | 'loading'>('loading');
   const [email, setEmail] = useState<string>('');
   const [batches, setBatches] = useState<any[]>([]);
@@ -17,24 +18,25 @@ export default function Dashboard() {
   const [error, setError] = useState('');
   const [showHelp, setShowHelp] = useState(false);
   
-  // LIVE POLLING STATE
+  // LIVE POLLING REFS (Fixes Stale Closures & Toast Spam)
   const [pollInterval, setPollInterval] = useState<NodeJS.Timeout | null>(null);
-  const emailRef = useRef('');
+  const emailRef = useRef(''); 
+  const notifiedRef = useRef<Set<number>>(new Set()); // Tracks batches we already toasted
 
-  // TABS STATE
+  // TABS & VIEWS
   const [activeTab, setActiveTab] = useState<'single' | 'batch'>('batch');
 
-  // SINGLE LOOKUP STATE
+  // SINGLE LOOKUP
   const [address, setAddress] = useState('');
   const [singleResults, setSingleResults] = useState<any>(null);
   const [singleLoading, setSingleLoading] = useState(false);
   const lastAddressRef = useRef<string>('');
 
-  // USAGE STATE
+  // USAGE STATS
   const [usage, setUsage] = useState({ used: 0, limit: 500 });
   const [usageLoading, setUsageLoading] = useState(true);
 
-  // --- INITIAL LOAD & AUTH ---
+  // --- INITIALIZATION ---
   useEffect(() => {
     if (typeof window !== 'undefined') {
       const storedEmail = (localStorage.getItem('email') || '').toLowerCase().trim();
@@ -44,7 +46,7 @@ export default function Dashboard() {
       const token = localStorage.getItem('token'); 
 
       if (storedEmail) {
-        // 1. Get Subscription Status
+        // 1. Get Subscription
         fetch(`/api/me?email=${encodeURIComponent(storedEmail)}`)
           .then(res => res.json())
           .then(data => {
@@ -57,20 +59,20 @@ export default function Dashboard() {
         setSubscription('free');
       }
 
-      // 2. Get Usage Stats
+      // 2. Get Usage
       if (token) {
         fetchUsage(token);
       } else {
         setUsageLoading(false);
       }
     }
-    // Cleanup polling on unmount
+    // Cleanup on unmount
     return () => stopPolling();
   }, []);
 
   // --- HELPER: FETCH USAGE (With Cache Busting) ---
   const fetchUsage = (token: string) => {
-      // ?t=... prevents browser caching so the counter moves live!
+      // ?t= timestamp forces browser to get fresh data
       fetch(`/api/usage?t=${Date.now()}`, {
           headers: { 
             'Authorization': `Bearer ${token}`,
@@ -86,9 +88,9 @@ export default function Dashboard() {
       .catch(console.error);
   };
 
-  // --- HELPER: START POLLING (Live Table Updates) ---
+  // --- HELPER: LIVE POLLING ---
   const startPolling = (batchId: number) => {
-    stopPolling(); 
+    stopPolling(); // Clear any existing pollers
     
     const currentEmail = emailRef.current || localStorage.getItem('email') || '';
     if (!currentEmail) return;
@@ -98,7 +100,7 @@ export default function Dashboard() {
         const res = await fetch(`/api/batch/${batchId}?email=${encodeURIComponent(currentEmail)}`);
         const data = await res.json();
         
-        // 1. Update Batch UI (Progress & Table)
+        // 1. Update UI
         setCurrentBatch((prev: any) => ({
             ...prev,
             status: data.status,
@@ -107,20 +109,26 @@ export default function Dashboard() {
             preview: data.preview || [] 
         }));
 
-        // 2. Update Usage Counter LIVE
+        // 2. Refresh Usage Counter
         const token = localStorage.getItem('token');
         if (token) fetchUsage(token);
 
-        // 3. Stop if done
+        // 3. Handle Completion (Without Toast Spam)
         if (data.status === 'complete' || data.status === 'failed') {
-            stopPolling();
-            loadBatches(currentEmail); // Refresh history list
-            toast.success(data.status === 'complete' ? 'Batch Complete!' : 'Batch Failed');
+            stopPolling(); // Stop the loop immediately
+            loadBatches(currentEmail); // Refresh history
+            
+            // CHECK IF ALREADY NOTIFIED
+            if (!notifiedRef.current.has(batchId)) {
+                if (data.status === 'complete') toast.success('Batch Complete!');
+                else toast.error('Batch Failed');
+                notifiedRef.current.add(batchId); // Mark as notified
+            }
         }
       } catch (e) { 
-          // Ignore transient network errors
+          // Ignore network blips, keep polling
       }
-    }, 2000); 
+    }, 2000); // Poll every 2 seconds
     setPollInterval(interval);
   };
 
@@ -129,7 +137,7 @@ export default function Dashboard() {
     setPollInterval(null);
   };
 
-  // --- ACTION HANDLERS ---
+  // --- ACTIONS ---
   const loadBatches = async (userEmail: string) => {
     try {
       const res = await fetch(`/api/batches?email=${encodeURIComponent(userEmail)}`);
@@ -162,12 +170,13 @@ export default function Dashboard() {
 
       if (!res.ok) {
         const errData = await res.json().catch(() => ({}));
-        if (res.status === 403) throw new Error(errData.message || "Monthly limit reached. Please upgrade.");
+        if (res.status === 403) throw new Error(errData.message || "Limit reached. Upgrade to Premium.");
         throw new Error(errData.message || `HTTP error: ${res.status}`);
       }
 
       const data = await res.json();
       if (data.status === 'success') {
+        // Init UI
         setCurrentBatch({
             batchId: data.batchId,
             status: 'processing',
@@ -177,7 +186,7 @@ export default function Dashboard() {
         });
         
         loadBatches(email);
-        toast.success('Batch started! Processing...');
+        toast.success('Batch started!');
         startPolling(data.batchId);
       } else {
         setError(data.message || 'Batch failed');
@@ -234,7 +243,7 @@ export default function Dashboard() {
         toast.error(data.message || 'Geocode failed');
       }
     } catch (error) {
-      toast.error('Geocode failed - check connection');
+      toast.error('Connection error');
     } finally {
       setSingleLoading(false);
     }
@@ -269,7 +278,7 @@ export default function Dashboard() {
     <div className="min-h-screen bg-gray-50">
       <Toaster position="top-right" />
 
-      {/* DASHBOARD TOOLBAR (White Header) */}
+      {/* TOOLBAR */}
       <div className="bg-white border-b shadow-sm sticky top-0 z-40 px-6 py-4">
         <div className="max-w-7xl mx-auto flex flex-col md:flex-row items-center justify-between">
           <div className="flex items-center space-x-4 mb-3 md:mb-0">
@@ -325,7 +334,7 @@ export default function Dashboard() {
 
       <main className="max-w-7xl mx-auto p-6 md:p-10">
         
-        {/* TABS SELECTION */}
+        {/* TABS */}
         <div className="flex justify-center mb-8">
             <div className="bg-white p-1 rounded-xl shadow-sm border border-gray-200 inline-flex">
                 <button onClick={() => setActiveTab('batch')} className={`px-6 py-2 rounded-lg text-sm font-bold transition-all ${activeTab === 'batch' ? 'bg-red-600 text-white shadow-md' : 'text-gray-500 hover:text-gray-900'}`}>Batch Upload</button>
@@ -333,12 +342,10 @@ export default function Dashboard() {
             </div>
         </div>
 
-        {/* ======================= */}
-        {/* BATCH UPLOAD VIEW    */}
-        {/* ======================= */}
+        {/* BATCH VIEW */}
         {activeTab === 'batch' && (
           <div className="grid lg:grid-cols-3 gap-8 animate-in fade-in zoom-in-95 duration-200">
-            {/* Left: Upload & Results */}
+            {/* Left: Upload */}
             <div className="lg:col-span-2 space-y-8">
                 <div className="bg-white rounded-2xl shadow-lg p-8 border border-gray-100">
                     <div className="flex justify-between items-center mb-6">
@@ -363,7 +370,7 @@ export default function Dashboard() {
                             <div className="pointer-events-none">
                                 <div className="text-5xl text-gray-300 group-hover:text-red-400 mb-4 transition-colors">☁️</div>
                                 <p className="text-lg font-medium text-gray-700">{file ? <span className="text-green-600">{file.name}</span> : "Click to Upload CSV"}</p>
-                                <p className="text-sm text-gray-400 mt-2">Drag and drop supported</p>
+                                <p className="text-sm text-gray-400 mt-2">Max 10,000 rows per file</p>
                             </div>
                         </div>
                         <button type="submit" disabled={loading} className="w-full bg-red-600 text-white py-3 rounded-xl font-bold text-lg hover:bg-red-700 disabled:opacity-50 shadow-md">
@@ -385,14 +392,12 @@ export default function Dashboard() {
                                 </span>
                             </div>
                             
-                            {/* Live Progress Bar */}
                             {currentBatch.status === 'processing' && (
                                 <div className="w-full bg-gray-200 rounded-full h-2 mb-4 overflow-hidden">
                                     <div className="bg-blue-600 h-2 transition-all duration-500" style={{ width: `${(currentBatch.processedRows / (currentBatch.totalRows || 1)) * 100}%` }}></div>
                                 </div>
                             )}
 
-                            {/* Live Table */}
                             {currentBatch.preview && (
                                 <div className="overflow-x-auto border rounded-lg max-h-96">
                                     <table className="w-full text-sm text-left">
@@ -410,7 +415,6 @@ export default function Dashboard() {
                                                     <td className="p-3 truncate max-w-xs">{row.address}</td>
                                                     <td className="p-3 font-mono text-xs">{row.lat ? `${row.lat}, ${row.lng}` : '-'}</td>
                                                     <td className="p-3 font-bold text-green-600">{row.status}</td>
-                                                    {/* NEW: Map Pin Link */}
                                                     <td className="p-3">
                                                         {row.lat && (
                                                             <a 
@@ -418,7 +422,7 @@ export default function Dashboard() {
                                                                 target="_blank" 
                                                                 rel="noreferrer"
                                                                 className="text-xl hover:scale-110 block transition-transform"
-                                                                title="View on Google Maps"
+                                                                title="View on Map"
                                                             >
                                                                 📍
                                                             </a>
@@ -473,9 +477,7 @@ export default function Dashboard() {
           </div>
         )}
 
-        {/* ======================= */}
-        {/* SINGLE LOOKUP VIEW    */}
-        {/* ======================= */}
+        {/* SINGLE LOOKUP VIEW */}
         {activeTab === 'single' && (
              <div className="max-w-2xl mx-auto bg-white p-8 rounded-2xl shadow-xl border border-gray-100 animate-in fade-in zoom-in-95 duration-200">
                  <h2 className="text-2xl font-bold mb-6 text-center text-gray-800">Single Lookup</h2>
@@ -494,7 +496,7 @@ export default function Dashboard() {
                             <p className="text-gray-700"><strong>Address:</strong> {singleResults.formatted_address}</p>
                         </div>
                         
-                        {/* NEW: VISUAL MAP PREVIEW */}
+                        {/* VISUAL MAP PREVIEW */}
                         {singleResults.lat && (
                             <div className="rounded-xl overflow-hidden border border-gray-300 shadow-lg h-64 relative group">
                                 <iframe

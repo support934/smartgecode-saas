@@ -1,7 +1,8 @@
 'use client';
 
-import React, { useState } from 'react';
-import Pricing from './components/Pricing'; // Ensure path is correct
+import React, { useState, useEffect } from 'react';
+import { useRouter } from 'next/navigation'; // Added for redirect
+import Pricing from './components/Pricing';
 
 export default function Home() {
   const [address, setAddress] = useState('');
@@ -10,6 +11,16 @@ export default function Home() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [successMsg, setSuccessMsg] = useState(''); // NEW: Success state
+  const router = useRouter();
+
+  // --- NEW: AUTO-REDIRECT IF LOGGED IN ---
+  useEffect(() => {
+    const token = localStorage.getItem('token');
+    if (token) {
+      router.push('/dashboard');
+    }
+  }, [router]);
+  // ---------------------------------------
 
   const handleGeocode = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -21,14 +32,11 @@ export default function Home() {
     setResults(null);
 
     try {
-      // 1. Single Lookup (Proxied to Backend)
       const res = await fetch(`/api/geocode?address=${encodeURIComponent(address)}`);
       const data = await res.json();
 
       if (data.status === 'success') {
         setResults(data);
-
-        // 2. Capture Lead & Send Email (Proxied to Backend)
         const emailRes = await fetch('/api/email', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -36,14 +44,12 @@ export default function Home() {
         });
 
         if (emailRes.ok) {
-           // FEEDBACK: Show the green success box
            setSuccessMsg(`Success! We sent the results to ${email}. Check your inbox to claim your free account.`);
         }
       } else {
         setError(data.message || 'Geocoding failed. Please try again.');
       }
     } catch (err) {
-      console.error(err);
       setError('Network error—please check your connection and try again.');
     } finally {
       setLoading(false);
@@ -63,7 +69,7 @@ export default function Home() {
         </a>
       </section>
 
-      {/* Pricing Component */}
+      {/* Pricing Section */}
       <Pricing />
 
       {/* Single Lookup Form */}
@@ -74,7 +80,7 @@ export default function Home() {
             <form onSubmit={handleGeocode}>
                 <input
                     type="text"
-                    placeholder="Enter address (e.g., 123 Main St, New York, NY)"
+                    placeholder="Enter address (e.g., 123 Main St, East Meadow, NY)"
                     value={address}
                     onChange={(e) => setAddress(e.target.value)}
                     style={{ width: '100%', padding: '12px', marginBottom: '10px', borderRadius: '6px', border: '1px solid #ddd' }}
@@ -97,10 +103,8 @@ export default function Home() {
                 </button>
             </form>
 
-            {/* Error Message */}
             {error && <p style={{ color: '#ef4444', marginTop: '10px', fontWeight: 'bold' }}>{error}</p>}
 
-            {/* Success Message - The Green Box */}
             {successMsg && (
                 <div style={{ marginTop: '20px', padding: '15px', background: '#ecfdf5', border: '1px solid #10b981', borderRadius: '6px', color: '#065f46', textAlign: 'left' }}>
                     <p style={{ fontWeight: 'bold', marginBottom: '5px' }}>✓ Results Sent!</p>
@@ -108,14 +112,13 @@ export default function Home() {
                 </div>
             )}
 
-            {/* Result Preview */}
             {results && (
             <div style={{ marginTop: '20px', padding: '20px', background: '#e6ffe6', borderRadius: '6px', textAlign: 'left' }}>
                 <h3 style={{ marginBottom: '10px', fontWeight: 'bold' }}>Result Preview</h3>
                 <p><strong>Lat:</strong> {results.lat}</p>
                 <p><strong>Lng:</strong> {results.lng}</p>
                 <p><strong>Address:</strong> {results.formatted_address}</p>
-                <p style={{ fontSize: '0.9em', color: '#666', marginTop: '10px' }}>Full details emailed to you.</p>
+                <p style={{ fontSize: '0.9em', color: '#666', marginTop: '10px' }}>Emailed to you. Upgrade for batch!</p>
             </div>
             )}
         </div>

@@ -17,6 +17,9 @@ export default function Dashboard() {
   const [error, setError] = useState('');
   const [showHelp, setShowHelp] = useState(false);
   
+  // Polling State
+  const [pollInterval, setPollInterval] = useState<NodeJS.Timeout | null>(null);
+
   // Tabs State
   const [activeTab, setActiveTab] = useState<'single' | 'batch'>('batch');
 
@@ -34,16 +37,15 @@ export default function Dashboard() {
     if (typeof window !== 'undefined') {
       const storedEmail = (localStorage.getItem('email') || '').toLowerCase().trim();
       setEmail(storedEmail);
+      
       const token = localStorage.getItem('token'); 
 
       if (storedEmail) {
-        // 1. Fetch Subscription
         fetch(`/api/me?email=${encodeURIComponent(storedEmail)}`)
           .then(res => res.json())
           .then(data => {
             const status = data.subscription_status || 'free';
             setSubscription(status);
-            // Load batches for everyone now, so they can see history if they used it
             loadBatches(storedEmail);
           })
           .catch(() => setSubscription('free'));
@@ -51,15 +53,11 @@ export default function Dashboard() {
         setSubscription('free');
       }
 
-      // 2. Fetch Usage
       if (token) {
         fetch('/api/usage', {
           headers: { 'Authorization': `Bearer ${token}` },
         })
-          .then(res => {
-            if (!res.ok) throw new Error('Failed to fetch usage');
-            return res.json();
-          })
+          .then(res => res.json())
           .then(data => {
             setUsage(data);
             setUsageLoading(false);
@@ -72,7 +70,40 @@ export default function Dashboard() {
         setUsageLoading(false);
       }
     }
+    // Cleanup polling on unmount
+    return () => stopPolling();
   }, []);
+
+  // --- POLLING LOGIC ---
+  const startPolling = (batchId: number) => {
+    stopPolling(); // Clear existing
+    const interval = setInterval(async () => {
+      try {
+        const res = await fetch(`/api/batch/${batchId}?email=${encodeURIComponent(email)}`);
+        const data = await res.json();
+        
+        setCurrentBatch((prev: any) => ({
+            ...prev,
+            status: data.status,
+            processedRows: data.processedRows,
+            totalRows: data.totalRows,
+            preview: data.preview || [] // Updates table LIVE
+        }));
+
+        if (data.status === 'complete' || data.status === 'failed') {
+            stopPolling();
+            loadBatches(email); // Refresh history
+            toast.success(data.status === 'complete' ? 'Batch Complete!' : 'Batch Failed');
+        }
+      } catch (e) { stopPolling(); }
+    }, 2000); // Poll every 2 seconds
+    setPollInterval(interval);
+  };
+
+  const stopPolling = () => {
+    if (pollInterval) clearInterval(pollInterval);
+    setPollInterval(null);
+  };
 
   const loadBatches = async (userEmail: string) => {
     try {
@@ -90,8 +121,7 @@ export default function Dashboard() {
 
     setLoading(true);
     setError('');
-    setCurrentBatch(null);
-
+    
     const formData = new FormData();
     formData.append('file', file);
     formData.append('email', email);
@@ -101,18 +131,13 @@ export default function Dashboard() {
     try {
       const res = await fetch('/api/batch-geocode', {
         method: 'POST',
-        headers: {
-            'Authorization': `Bearer ${token}` 
-        },
+        headers: { 'Authorization': `Bearer ${token}` },
         body: formData,
       });
 
       if (!res.ok) {
         const errData = await res.json().catch(() => ({}));
-        // Handle limits gracefully
-        if (res.status === 403) {
-            throw new Error(errData.message || "Monthly limit reached. Please upgrade.");
-        }
+        if (res.status === 403) throw new Error(errData.message || "Limit reached. Upgrade to Premium.");
         throw new Error(errData.message || `HTTP error: ${res.status}`);
       }
 
@@ -121,21 +146,22 @@ export default function Dashboard() {
         setCurrentBatch({
             batchId: data.batchId,
             status: 'processing',
-            totalRows: data.totalRows || 0, 
-            preview: data.preview || [] 
+            totalRows: data.totalRows || 0,
+            processedRows: 0,
+            preview: [] 
         });
         
         loadBatches(email);
+        toast.success('Batch started!');
+        startPolling(data.batchId);
         
-        // Refresh usage after start (it might lag until processed, but good to try)
+        // Refresh usage
         if (token) {
              setTimeout(() => {
                  fetch('/api/usage', { headers: { 'Authorization': `Bearer ${token}` } })
                     .then(r => r.json()).then(d => setUsage(d));
              }, 2000);
         }
-
-        toast.success('Batch started! We will email you when done.');
       } else {
         setError(data.message || 'Batch processing failed');
         toast.error('Batch failed');
@@ -180,8 +206,11 @@ export default function Dashboard() {
       
       if (data.status === 'success') {
         lastAddressRef.current = address;
-        
-        // Refresh usage
+        await fetch('/api/email', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email, address, result: data }),
+        });
         if(token) {
              fetch('/api/usage', { headers: { 'Authorization': `Bearer ${token}` } })
                 .then(r => r.json()).then(d => setUsage(d));
@@ -203,27 +232,14 @@ export default function Dashboard() {
         email,
         address: lastAddressRef.current || 'Premium Upgrade',
       };
-
       const res = await fetch('/api/checkout', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
       });
-
       const data = await res.json();
-      if (data.url) {
-        window.location.href = data.url;
-      } else {
-        toast.error('Could not initiate checkout');
-      }
-    } catch (error) {
-      toast.error('Upgrade failed');
-    }
-  };
-
-  const logout = () => {
-    localStorage.clear();
-    window.location.href = '/';
+      if (data.url) window.location.href = data.url;
+    } catch (error) { toast.error('Upgrade failed'); }
   };
 
   if (subscription === 'loading') {
@@ -238,26 +254,26 @@ export default function Dashboard() {
     <div className="min-h-screen bg-gray-50">
       <Toaster position="top-right" />
 
-      {/* Header */}
-      <header className="bg-red-600 text-white p-5 shadow-lg sticky top-0 z-50">
-        <div className="max-w-7xl mx-auto flex items-center justify-between">
-          <div className="flex items-center space-x-4">
-            <h1 className="text-2xl font-bold tracking-tight">Smartgeocode</h1>
-            <span className={`px-3 py-1 rounded text-xs font-bold uppercase tracking-wider ${subscription === 'premium' ? 'bg-yellow-400 text-red-900' : 'bg-red-800 text-red-100'}`}>
-                {subscription === 'premium' ? 'Premium' : 'Free Plan'}
+      {/* DASHBOARD TOOLBAR */}
+      <div className="bg-white border-b shadow-sm sticky top-0 z-40 px-6 py-4">
+        <div className="max-w-7xl mx-auto flex flex-col md:flex-row items-center justify-between">
+          <div className="flex items-center space-x-4 mb-3 md:mb-0">
+            <h2 className="text-lg font-bold text-gray-800">My Dashboard</h2>
+            <span className={`px-3 py-1 rounded text-xs font-bold uppercase tracking-wider ${subscription === 'premium' ? 'bg-yellow-100 text-yellow-800' : 'bg-gray-100 text-gray-700'}`}>
+                {subscription === 'premium' ? 'Premium Plan' : 'Free Plan'}
             </span>
           </div>
 
           <div className="flex items-center space-x-6">
             {!usageLoading && (
-              <div className="hidden md:block text-sm font-medium">
-                <div className="flex justify-between mb-1 text-red-100">
-                    <span>Usage ({subscription === 'free' ? '500 limit' : 'Unlimited'})</span>
-                    <span>{usage.used} used</span>
+              <div className="flex items-center gap-4">
+                <div className="text-right">
+                    <p className="text-xs text-gray-500 uppercase font-bold">Usage</p>
+                    <p className="text-sm font-bold text-gray-800">{usage.used} / {usage.limit}</p>
                 </div>
-                <div className="w-40 h-2 bg-red-800 rounded-full overflow-hidden border border-red-700">
+                <div className="w-32 h-2 bg-gray-200 rounded-full overflow-hidden">
                     <div 
-                        className={`h-full transition-all duration-500 ${usage.used >= usage.limit ? 'bg-yellow-400' : 'bg-white'}`} 
+                        className={`h-full transition-all duration-500 ${usage.used >= usage.limit ? 'bg-red-500' : 'bg-green-500'}`} 
                         style={{ width: `${Math.min((usage.used / usage.limit) * 100, 100)}%` }}
                     />
                 </div>
@@ -277,7 +293,7 @@ export default function Dashboard() {
                     if (data.url) window.location.href = data.url;
                   } catch(e) { toast.error('Error opening billing portal'); }
                 }}
-                className="bg-white text-red-600 px-4 py-2 rounded text-sm font-bold hover:bg-gray-100 transition shadow-sm"
+                className="text-red-600 text-sm font-semibold hover:underline"
               >
                 Manage Plan
               </button>
@@ -289,26 +305,19 @@ export default function Dashboard() {
                 Upgrade to Pro
               </button>
             )}
-            
-            <button onClick={logout} className="text-white hover:text-red-200 text-sm font-semibold transition">
-                Log Out
-            </button>
           </div>
         </div>
-      </header>
+      </div>
 
-      {/* Main Content */}
       <main className="max-w-7xl mx-auto p-6 md:p-10">
         
-        {/* TABS - The Core UI Fix */}
+        {/* TABS */}
         <div className="flex justify-center mb-8">
             <div className="bg-white p-1 rounded-xl shadow-sm border border-gray-200 inline-flex">
                 <button
                     onClick={() => setActiveTab('batch')}
                     className={`px-6 py-2 rounded-lg text-sm font-bold transition-all ${
-                        activeTab === 'batch' 
-                        ? 'bg-red-600 text-white shadow-md' 
-                        : 'text-gray-500 hover:text-gray-900'
+                        activeTab === 'batch' ? 'bg-red-600 text-white shadow-md' : 'text-gray-500 hover:text-gray-900'
                     }`}
                 >
                     Batch Upload
@@ -316,9 +325,7 @@ export default function Dashboard() {
                 <button
                     onClick={() => setActiveTab('single')}
                     className={`px-6 py-2 rounded-lg text-sm font-bold transition-all ${
-                        activeTab === 'single' 
-                        ? 'bg-red-600 text-white shadow-md' 
-                        : 'text-gray-500 hover:text-gray-900'
+                        activeTab === 'single' ? 'bg-red-600 text-white shadow-md' : 'text-gray-500 hover:text-gray-900'
                     }`}
                 >
                     Single Lookup
@@ -326,50 +333,11 @@ export default function Dashboard() {
             </div>
         </div>
 
-        {/* --- SINGLE LOOKUP VIEW --- */}
-        {activeTab === 'single' && (
-          <div className="max-w-3xl mx-auto animate-in fade-in zoom-in-95 duration-200">
-            <div className="bg-white rounded-2xl shadow-xl p-8 border border-gray-100">
-              <h2 className="text-2xl font-bold text-gray-900 mb-6 text-center">Single Address Lookup</h2>
-              <form onSubmit={handleSingleSubmit} className="space-y-6">
-                <input
-                  type="text"
-                  placeholder="Enter address (e.g. 123 Main St, New York)"
-                  value={address}
-                  onChange={(e) => setAddress(e.target.value)}
-                  className="w-full p-4 border border-gray-300 rounded-xl focus:ring-2 focus:ring-red-500 outline-none text-lg transition shadow-sm"
-                  required
-                />
-                <button
-                  type="submit"
-                  disabled={singleLoading}
-                  className="w-full bg-red-600 text-white py-4 rounded-xl font-bold text-lg hover:bg-red-700 transition disabled:opacity-50 shadow-md"
-                >
-                  {singleLoading ? 'Searching...' : 'Get Coordinates'}
-                </button>
-              </form>
-
-              {singleResults && (
-                <div className="mt-8 p-6 bg-green-50 rounded-xl border border-green-100 animate-in fade-in">
-                  <h4 className="text-lg font-bold text-green-800 mb-3 flex items-center">
-                    <span className="bg-green-200 text-green-800 rounded-full w-6 h-6 flex items-center justify-center mr-2 text-sm">✓</span>
-                    Result Found
-                  </h4>
-                  <div className="text-gray-700 space-y-2 bg-white p-4 rounded-lg border border-green-100 shadow-sm">
-                    <p><span className="font-semibold text-gray-900">Lat:</span> {singleResults.lat}</p>
-                    <p><span className="font-semibold text-gray-900">Lng:</span> {singleResults.lng}</p>
-                    <p><span className="font-semibold text-gray-900">Address:</span> {singleResults.formatted_address}</p>
-                  </div>
-                </div>
-              )}
-            </div>
-          </div>
-        )}
-
         {/* --- BATCH UPLOAD VIEW --- */}
         {activeTab === 'batch' && (
           <div className="grid lg:grid-cols-3 gap-8 animate-in fade-in zoom-in-95 duration-200">
-            {/* Left: Upload */}
+            
+            {/* Left: Upload Column */}
             <div className="lg:col-span-2 space-y-8">
                 <div className="bg-white rounded-2xl shadow-lg p-8 border border-gray-100">
                     <div className="flex justify-between items-center mb-6">
@@ -426,133 +394,139 @@ export default function Dashboard() {
                         </div>
                     )}
 
-                    {currentBatch && currentBatch.status === 'success' && currentBatch.preview && (
-                      <div className="mt-8">
-                        <h3 className="text-lg font-bold mb-4 text-gray-800">Batch Preview</h3>
-                        <div className="overflow-x-auto rounded-xl border border-gray-200">
-                          <table className="w-full text-sm text-left">
-                            <thead className="bg-gray-50 font-semibold text-gray-700">
-                              <tr>
-                                <th className="p-3">Address</th>
-                                <th className="p-3">Lat/Lng</th>
-                                <th className="p-3">Status</th>
-                              </tr>
-                            </thead>
-                            <tbody className="divide-y divide-gray-100">
-                              {currentBatch.preview.map((row: any, i: number) => (
-                                <tr key={i}>
-                                  <td className="p-3">{row.address}</td>
-                                  <td className="p-3">{row.lat ? `${row.lat}, ${row.lng}` : '-'}</td>
-                                  <td className="p-3 text-green-600 font-medium">{row.status}</td>
-                                </tr>
-                              ))}
-                            </tbody>
-                          </table>
-                        </div>
-                      </div>
-                    )}
-                </div>
+                    {currentBatch && (
+                        <div className="bg-white p-8 rounded-2xl shadow border border-gray-100 animate-in slide-in-from-bottom-4 mt-8">
+                            <div className="flex justify-between items-center mb-4">
+                                <h3 className="text-xl font-bold">
+                                    {currentBatch.status === 'processing' ? 'Processing...' : 'Batch Results'}
+                                </h3>
+                                <span className={`px-3 py-1 rounded font-bold text-sm ${currentBatch.status === 'complete' ? 'bg-green-100 text-green-700' : 'bg-blue-100 text-blue-700'}`}>
+                                    {currentBatch.status ? currentBatch.status.toUpperCase() : 'PENDING'}
+                                </span>
+                            </div>
 
-                {/* History Table */}
-                <div className="bg-white rounded-2xl shadow-lg p-8 border border-gray-100">
-                    <h3 className="text-xl font-bold text-gray-800 mb-6">Recent Batches</h3>
-                    {batches.length === 0 ? (
-                        <div className="text-center py-10 bg-gray-50 rounded-xl border border-dashed border-gray-200">
-                            <p className="text-gray-500 italic">No batches processed yet.</p>
-                        </div>
-                    ) : (
-                        <div className="overflow-x-auto">
-                            <table className="w-full text-left border-collapse">
-                                <thead className="bg-gray-50 text-gray-600 uppercase text-xs font-semibold">
-                                    <tr>
-                                        <th className="p-4 rounded-tl-lg">ID</th>
-                                        <th className="p-4">Date</th>
-                                        <th className="p-4">Status</th>
-                                        <th className="p-4 rounded-tr-lg text-right">Action</th>
-                                    </tr>
-                                </thead>
-                                <tbody className="divide-y divide-gray-100 text-sm">
-                                    {batches.map((b) => (
-                                        <tr key={b.id} className="hover:bg-gray-50 transition-colors">
-                                            <td className="p-4 font-medium text-gray-900">#{b.id}</td>
-                                            <td className="p-4 text-gray-600">{new Date(b.created_at).toLocaleDateString()}</td>
-                                            <td className="p-4">
-                                                <span className={`px-2 py-1 rounded-full text-xs font-bold ${b.status === 'complete' ? 'bg-green-100 text-green-700' : 'bg-yellow-100 text-yellow-700'}`}>
-                                                    {b.status ? b.status.toUpperCase() : 'PENDING'}
-                                                </span>
-                                            </td>
-                                            <td className="p-4 text-right">
-                                                <button 
-                                                    onClick={() => downloadBatch(b.id)}
-                                                    className="text-red-600 hover:text-red-800 font-semibold text-sm bg-red-50 hover:bg-red-100 px-3 py-1 rounded transition"
-                                                >
-                                                    Download
-                                                </button>
-                                            </td>
-                                        </tr>
-                                    ))}
-                                </tbody>
-                            </table>
+                            {currentBatch.status === 'processing' && (
+                                <div className="mb-6">
+                                    <div className="flex justify-between text-sm mb-1 font-medium text-gray-600">
+                                        <span>Progress</span>
+                                        <span>{currentBatch.processedRows || 0} / {currentBatch.totalRows || '?'}</span>
+                                    </div>
+                                    <div className="w-full bg-gray-200 rounded-full h-3 overflow-hidden">
+                                        <div 
+                                            className="bg-blue-600 h-3 transition-all duration-500 ease-out" 
+                                            style={{ width: `${(currentBatch.processedRows / (currentBatch.totalRows || 1)) * 100}%` }}
+                                        ></div>
+                                    </div>
+                                    <p className="text-xs text-gray-400 mt-2 text-center animate-pulse">Do not close this tab while processing...</p>
+                                </div>
+                            )}
+
+                            {currentBatch.preview && currentBatch.preview.length > 0 && (
+                                <div className="overflow-x-auto border rounded-lg max-h-96">
+                                    <table className="w-full text-sm text-left">
+                                        <thead className="bg-gray-50 sticky top-0">
+                                            <tr>
+                                                <th className="p-3 border-b">Address</th>
+                                                <th className="p-3 border-b">Result</th>
+                                                <th className="p-3 border-b">Status</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            {currentBatch.preview.map((row: any, i: number) => (
+                                                <tr key={i} className="hover:bg-gray-50 border-b last:border-0">
+                                                    <td className="p-3 max-w-xs truncate" title={row.address}>{row.address}</td>
+                                                    <td className="p-3 font-mono text-xs">{row.lat ? `${row.lat}, ${row.lng}` : '-'}</td>
+                                                    <td className="p-3 font-bold text-green-600">{row.status}</td>
+                                                </tr>
+                                            ))}
+                                        </tbody>
+                                    </table>
+                                </div>
+                            )}
+                            
+                            {(currentBatch.status === 'complete' || currentBatch.status === 'processing') && (
+                                <button onClick={() => downloadBatch(currentBatch.batchId)} className="mt-6 w-full bg-green-600 text-white py-3 rounded-lg font-bold hover:bg-green-700 shadow-md">
+                                    Download Full CSV
+                                </button>
+                            )}
                         </div>
                     )}
                 </div>
             </div>
 
-            {/* Right: Quick Stats or Tips */}
-            <div className="space-y-6">
-                <div className="bg-blue-50 p-6 rounded-2xl border border-blue-100 shadow-sm">
-                    <h4 className="font-bold text-blue-900 mb-2 flex items-center gap-2">
-                        <span>💡</span> Pro Tip
-                    </h4>
-                    <p className="text-sm text-blue-800 leading-relaxed">
-                        For best results, ensure your CSV has these columns:
-                        <br/><span className="font-mono bg-blue-100 px-1 rounded text-blue-900">address</span> (required)
-                        <br/><span className="font-mono bg-blue-100 px-1 rounded text-blue-900">city</span>, <span className="font-mono bg-blue-100 px-1 rounded text-blue-900">state</span>, <span className="font-mono bg-blue-100 px-1 rounded text-blue-900">country</span>
-                    </p>
-                </div>
-                
-                {currentBatch && (
-                    <div className="bg-green-50 p-6 rounded-2xl border border-green-100 shadow-sm animate-in slide-in-from-right">
-                        <h4 className="font-bold text-green-900 mb-2 flex items-center gap-2">
-                            <span>🚀</span> Batch #{currentBatch.batchId} Started
-                        </h4>
-                        <p className="text-sm text-green-800 mb-4">
-                            Your file is being processed in the background. You can close this window; we will email you when it is done.
-                        </p>
-                        <button onClick={() => loadBatches(email)} className="text-green-700 text-sm font-semibold underline hover:text-green-900">
-                            Refresh Status
-                        </button>
+            {/* Right: History Column */}
+            <div className="bg-white rounded-2xl shadow-lg p-8 border border-gray-100 h-fit">
+                <h3 className="text-xl font-bold text-gray-800 mb-6">Recent Batches</h3>
+                {batches.length === 0 ? (
+                    <div className="text-center py-10 bg-gray-50 rounded-xl border border-dashed border-gray-200">
+                        <p className="text-gray-500 italic">No batches processed yet.</p>
+                    </div>
+                ) : (
+                    <div className="overflow-x-auto">
+                        <table className="w-full text-left border-collapse">
+                            <thead className="bg-gray-50 text-gray-600 uppercase text-xs font-semibold">
+                                <tr>
+                                    <th className="p-4 rounded-tl-lg">ID</th>
+                                    <th className="p-4">Date</th>
+                                    <th className="p-4">Status</th>
+                                    <th className="p-4 rounded-tr-lg text-right">Action</th>
+                                </tr>
+                            </thead>
+                            <tbody className="divide-y divide-gray-100 text-sm">
+                                {batches.map((b) => (
+                                    <tr key={b.id} className="hover:bg-gray-50 transition-colors">
+                                        <td className="p-4 font-medium text-gray-900">#{b.id}</td>
+                                        <td className="p-4 text-gray-600">{new Date(b.created_at).toLocaleDateString()}</td>
+                                        <td className="p-4">
+                                            <span className={`px-2 py-1 rounded-full text-xs font-bold ${b.status === 'complete' ? 'bg-green-100 text-green-700' : 'bg-yellow-100 text-yellow-700'}`}>
+                                                {b.status ? b.status.toUpperCase() : 'PENDING'}
+                                            </span>
+                                        </td>
+                                        <td className="p-4 text-right">
+                                            <button 
+                                                onClick={() => downloadBatch(b.id)}
+                                                className="text-red-600 hover:text-red-800 font-semibold text-sm bg-red-50 hover:bg-red-100 px-3 py-1 rounded transition"
+                                            >
+                                                Download
+                                            </button>
+                                        </td>
+                                    </tr>
+                                ))}
+                            </tbody>
+                        </table>
                     </div>
                 )}
             </div>
           </div>
         )}
 
+        {/* --- SINGLE LOOKUP VIEW --- */}
+        {activeTab === 'single' && (
+             <div className="max-w-2xl mx-auto bg-white p-8 rounded-2xl shadow border border-gray-100 animate-in fade-in">
+                 <h2 className="text-2xl font-bold mb-6 text-center">Single Lookup</h2>
+                 <form onSubmit={handleSingleSubmit} className="space-y-4">
+                    <input type="text" value={address} onChange={e => setAddress(e.target.value)} placeholder="Enter Address" className="w-full p-3 border rounded-lg" required />
+                    <button type="submit" disabled={singleLoading} className="w-full bg-red-600 text-white py-3 rounded-lg font-bold">{singleLoading ? 'Searching...' : 'Lookup'}</button>
+                 </form>
+                 {singleResults && (
+                    <div className="mt-6 p-4 bg-gray-50 rounded-lg border">
+                        <p><strong>Lat/Lng:</strong> {singleResults.lat}, {singleResults.lng}</p>
+                        <p><strong>Addr:</strong> {singleResults.formatted_address}</p>
+                    </div>
+                 )}
+             </div>
+        )}
+
         {/* Help Modal */}
         {showHelp && (
             <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4 backdrop-blur-sm">
-                <div className="bg-white rounded-2xl p-8 max-w-lg w-full relative shadow-2xl animate-in zoom-in-95">
-                    <button 
-                        onClick={() => setShowHelp(false)}
-                        className="absolute top-4 right-4 text-gray-400 hover:text-gray-600 text-xl font-bold bg-gray-100 rounded-full w-8 h-8 flex items-center justify-center transition"
-                    >
-                        ×
-                    </button>
-                    <h3 className="text-2xl font-bold text-gray-900 mb-4">CSV Formatting Guide</h3>
-                    <p className="text-gray-600 mb-4">Upload a standard CSV file with headers.</p>
-                    
-                    <div className="bg-gray-800 text-gray-100 p-4 rounded-lg font-mono text-xs overflow-x-auto mb-6 shadow-inner">
-                        address,city,zip<br/>
-                        123 Main St,New York,10001<br/>
-                        456 Elm Ave,Boston,02110
+                <div className="bg-white p-8 rounded-2xl max-w-md w-full relative shadow-2xl animate-in zoom-in-95">
+                    <button onClick={() => setShowHelp(false)} className="absolute top-4 right-4 text-gray-400 hover:text-gray-600 text-xl font-bold bg-gray-100 rounded-full w-8 h-8 flex items-center justify-center transition">×</button>
+                    <h3 className="font-bold text-xl mb-4 text-gray-900">CSV Format</h3>
+                    <p className="text-gray-600 mb-4">Required header: <code>address</code></p>
+                    <div className="bg-gray-100 p-4 rounded-lg font-mono text-xs overflow-x-auto">
+                        address,city,zip<br/>123 Main St,NY,10001
                     </div>
-                    
-                    <button 
-                        onClick={() => setShowHelp(false)}
-                        className="w-full bg-red-600 text-white py-3 rounded-xl font-bold hover:bg-red-700 transition shadow-md"
-                    >
-                        Got it, thanks!
-                    </button>
                 </div>
             </div>
         )}

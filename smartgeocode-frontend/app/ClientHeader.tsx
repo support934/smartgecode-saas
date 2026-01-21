@@ -8,14 +8,14 @@ export default function ClientHeader() {
   const [email, setEmail] = useState('');
 
   useEffect(() => {
-    // Check local storage for token
     const checkAuth = () => {
+        // Check for 'token' (matching Login/Dashboard)
         const token = localStorage.getItem('token');
         setIsLoggedIn(!!token);
         setEmail(localStorage.getItem('email') || '');
     };
     checkAuth();
-    // Use interval to catch login state changes from other tabs/pages
+    // Poll every second to sync login state across tabs
     const interval = setInterval(checkAuth, 1000);
     return () => clearInterval(interval);
   }, []);
@@ -29,19 +29,26 @@ export default function ClientHeader() {
     <div className="flex items-center space-x-6">
       {isLoggedIn ? (
         <>
-          <span className="text-gray-700 font-medium hidden sm:inline">{email}</span>
+          {/* FIX: Text is now white to match the red header */}
+          <span className="text-white font-medium hidden sm:inline border-r border-red-400 pr-4">
+            {email}
+          </span>
+          
+          <Link href="/dashboard" className="text-red-100 hover:text-white font-semibold transition">
+            Dashboard
+          </Link>
+
           <button
             onClick={logout}
-            className="text-red-600 font-semibold hover:underline"
+            className="bg-white text-red-600 px-4 py-2 rounded-lg font-bold hover:bg-red-50 transition shadow-sm"
           >
             Log Out
           </button>
         </>
       ) : (
-        // FIXED: Points to /login
         <Link
           href="/login"
-          className="bg-white text-red-600 px-6 py-2 rounded-lg font-semibold hover:bg-gray-100 transition shadow-sm border border-red-100"
+          className="bg-white text-red-600 px-6 py-2 rounded-lg font-bold hover:bg-red-50 transition shadow-sm"
         >
           Log In
         </Link>

@@ -8,7 +8,7 @@ import { loadStripe } from '@stripe/stripe-js';
 const stripePromise = loadStripe(process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY!);
 
 export default function Dashboard() {
-  // --- STATE MANAGEMENT ---
+  // --- STATE ---
   const [subscription, setSubscription] = useState<'free' | 'premium' | 'loading'>('loading');
   const [email, setEmail] = useState<string>('');
   const [batches, setBatches] = useState<any[]>([]);
@@ -18,12 +18,12 @@ export default function Dashboard() {
   const [error, setError] = useState('');
   const [showHelp, setShowHelp] = useState(false);
   
-  // LIVE POLLING REFS (Fixes Stale Closures & Toast Spam)
+  // LIVE POLLING REFS (Fixes Stale State & Toast Spam)
   const [pollInterval, setPollInterval] = useState<NodeJS.Timeout | null>(null);
   const emailRef = useRef(''); 
-  const notifiedRef = useRef<Set<number>>(new Set()); // Tracks batches we already toasted
+  const notifiedRef = useRef<Set<number>>(new Set()); // Tracks batches already toasted
 
-  // TABS & VIEWS
+  // TABS
   const [activeTab, setActiveTab] = useState<'single' | 'batch'>('batch');
 
   // SINGLE LOOKUP
@@ -32,11 +32,11 @@ export default function Dashboard() {
   const [singleLoading, setSingleLoading] = useState(false);
   const lastAddressRef = useRef<string>('');
 
-  // USAGE STATS
+  // USAGE
   const [usage, setUsage] = useState({ used: 0, limit: 500 });
   const [usageLoading, setUsageLoading] = useState(true);
 
-  // --- INITIALIZATION ---
+  // --- INITIAL LOAD ---
   useEffect(() => {
     if (typeof window !== 'undefined') {
       const storedEmail = (localStorage.getItem('email') || '').toLowerCase().trim();
@@ -66,13 +66,13 @@ export default function Dashboard() {
         setUsageLoading(false);
       }
     }
-    // Cleanup on unmount
+    // Cleanup polling on unmount
     return () => stopPolling();
   }, []);
 
   // --- HELPER: FETCH USAGE (With Cache Busting) ---
   const fetchUsage = (token: string) => {
-      // ?t= timestamp forces browser to get fresh data
+      // ?t= timestamp forces browser to get fresh data, fixing the "stuck counter"
       fetch(`/api/usage?t=${Date.now()}`, {
           headers: { 
             'Authorization': `Bearer ${token}`,
@@ -90,7 +90,7 @@ export default function Dashboard() {
 
   // --- HELPER: LIVE POLLING ---
   const startPolling = (batchId: number) => {
-    stopPolling(); // Clear any existing pollers
+    stopPolling(); // Clear any existing
     
     const currentEmail = emailRef.current || localStorage.getItem('email') || '';
     if (!currentEmail) return;
@@ -109,7 +109,7 @@ export default function Dashboard() {
             preview: data.preview || [] 
         }));
 
-        // 2. Refresh Usage Counter
+        // 2. Refresh Usage Counter LIVE
         const token = localStorage.getItem('token');
         if (token) fetchUsage(token);
 
@@ -126,7 +126,7 @@ export default function Dashboard() {
             }
         }
       } catch (e) { 
-          // Ignore network blips, keep polling
+          // Ignore network blips
       }
     }, 2000); // Poll every 2 seconds
     setPollInterval(interval);
@@ -137,7 +137,7 @@ export default function Dashboard() {
     setPollInterval(null);
   };
 
-  // --- ACTIONS ---
+  // --- ACTION HANDLERS ---
   const loadBatches = async (userEmail: string) => {
     try {
       const res = await fetch(`/api/batches?email=${encodeURIComponent(userEmail)}`);
@@ -237,7 +237,7 @@ export default function Dashboard() {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ email, address, result: data }),
         });
-        if(token) fetchUsage(token);
+        if(token) fetchUsage(token); // Update usage immediately
         toast.success('Result found!');
       } else {
         toast.error(data.message || 'Geocode failed');
@@ -399,7 +399,7 @@ export default function Dashboard() {
                             )}
 
                             {currentBatch.preview && (
-                                <div className="overflow-x-auto border rounded-lg max-h-96">
+                                <div className="overflow-x-auto border rounded-lg max-h-80">
                                     <table className="w-full text-sm text-left">
                                         <thead className="bg-gray-50 sticky top-0">
                                             <tr>
@@ -415,6 +415,7 @@ export default function Dashboard() {
                                                     <td className="p-3 truncate max-w-xs">{row.address}</td>
                                                     <td className="p-3 font-mono text-xs">{row.lat ? `${row.lat}, ${row.lng}` : '-'}</td>
                                                     <td className="p-3 font-bold text-green-600">{row.status}</td>
+                                                    {/* NEW: Map Pin Link */}
                                                     <td className="p-3">
                                                         {row.lat && (
                                                             <a 

@@ -374,7 +374,7 @@ public class GeocodeController {
         Email from = new Email("noreply@smartgeocode.io");
         Email to = new Email(email);
         String subject = "Batch Processing Complete";
-        String body = "Your batch #" + batchId + " is done. Processed " + total + " rows.\n\nLogin to download: https://geocode-frontend.smartgeocode.io";
+        String body = "Batch #" + batchId + " complete. " + total + " rows processed.\nDownload: https://geocode-frontend.smartgeocode.io";
         Content content = new Content("text/plain", body);
         Mail mail = new Mail(from, subject, to, content);
         try {
@@ -538,7 +538,6 @@ public class GeocodeController {
         return Jwts.builder().setSubject(email).claim("userId", userId).setIssuedAt(new Date()).setExpiration(new Date(System.currentTimeMillis() + 604800000)).signWith(SignatureAlgorithm.HS256, JWT_SECRET).compact();
     }
     
-    // Updated Usage Endpoint with Cache Busting Headers
     @GetMapping("/usage")
     public ResponseEntity<Map<String, Integer>> getUsage(@RequestHeader(value = "Authorization", required = false) String authHeader) {
         Long userId = extractUserId(authHeader);

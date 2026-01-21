@@ -205,7 +205,6 @@ public class GeocodeController {
     }
 
     // === 3. THE "IRON CLAD" LOGIC ENGINE ===
-    // This is the updated logic block that restores the 100% success rate
     private void processBatchLogic(int batchId, Long userId, List<String[]> rows, String email) {
         StringBuilder csvOutput = new StringBuilder();
         csvOutput.append("input_address,lat,lng,formatted_address,status,match_type\n");
@@ -229,6 +228,13 @@ public class GeocodeController {
                 continue;
             }
 
+            // Dynamic Limit Check (Stop if they run out mid-batch)
+            if (!lookupService.canPerformLookup(userId, 1)) {
+                 csvOutput.append("\"LIMIT REACHED\",\"\",\"\",\"Upgrade to continue\",\"skipped\",\"none\"\n");
+                 finishBatch(batchId, csvOutput.toString(), processed);
+                 return;
+            }
+
             // 2. Extract Data
             processed++;
             
@@ -244,7 +250,7 @@ public class GeocodeController {
 
             // --- WATERFALL STRATEGY (High Accuracy) ---
             
-            // Attempt 1: Landmark + City + Country (Best for famous places like 'Taj Mahal')
+            // Attempt 1: Landmark + City + Country (Best for famous places)
             if (!landmark.isEmpty()) {
                 String q = buildQuery(landmark, city, state, country);
                 result = performGeocodeRequest(q);
@@ -258,7 +264,7 @@ public class GeocodeController {
                 if ("success".equals(result.get("status"))) matchType = "address_context";
             }
 
-            // Attempt 3: Landmark Only (Global search, fallback)
+            // Attempt 3: Landmark Only (Global search)
             if (!"success".equals(result.get("status")) && !landmark.isEmpty()) {
                 result = performGeocodeRequest(landmark);
                 if ("success".equals(result.get("status"))) matchType = "landmark_only";
@@ -291,15 +297,17 @@ public class GeocodeController {
             );
             csvOutput.append(rowString);
 
+            // 4. Update Usage & DB (LIVE UPDATE)
             if ("success".equals(result.get("status"))) lookupService.incrementLookup(userId, 1);
 
-            // Update Progress in DB
+            // CRITICAL: Update DB every row so frontend polling sees live data
             updateBatchProgress(batchId, processed, csvOutput.toString());
             
-            // Rate Limit Delay
+            // 5. Rate Limit Delay
             try { Thread.sleep(API_DELAY_MS); } catch (InterruptedException ignored) {}
         }
 
+        // Finalize
         finishBatch(batchId, csvOutput.toString(), processed);
         sendCompletionEmail(email, batchId, processed);
     }
@@ -311,7 +319,6 @@ public class GeocodeController {
         return "";
     }
 
-    // Missing Helper Method Added Back
     private String buildQuery(String main, String city, String state, String country) {
         List<String> parts = new ArrayList<>();
         if (!main.isEmpty()) parts.add(main);
@@ -342,7 +349,7 @@ public class GeocodeController {
         return Map.of("status", "error");
     }
 
-    // === 4. DB UPDATE HELPERS ===
+    // === 4. DB UPDATE HELPERS (LIVE) ===
     private void updateBatchProgress(int batchId, int count, String partialCsv) {
         try (Connection conn = dataSource.getConnection()) {
             PreparedStatement stmt = conn.prepareStatement("UPDATE batches SET processed_rows = ?, results = ? WHERE id = ?");
@@ -374,7 +381,7 @@ public class GeocodeController {
         Email from = new Email("noreply@smartgeocode.io");
         Email to = new Email(email);
         String subject = "Batch Processing Complete";
-        String body = "Batch #" + batchId + " complete. " + total + " rows processed.\nDownload: https://geocode-frontend.smartgeocode.io";
+        String body = "Your batch #" + batchId + " is done. Processed " + total + " rows.\n\nLogin to download: https://geocode-frontend.smartgeocode.io";
         Content content = new Content("text/plain", body);
         Mail mail = new Mail(from, subject, to, content);
         try {
@@ -539,13 +546,20 @@ public class GeocodeController {
     }
     
     @GetMapping("/usage")
-    public ResponseEntity<Map<String, Integer>> getUsage(@RequestHeader(value = "Authorization", required = false) String authHeader) {
+    public ResponseEntity<Map<String, Object>> getUsage(@RequestHeader(value = "Authorization", required = false) String authHeader) {
         Long userId = extractUserId(authHeader);
+        Map<String, Integer> usageData = lookupService.getUsage(userId);
+        
+        // Ensure standardization for frontend
+        Map<String, Object> response = new HashMap<>();
+        response.put("used", usageData.getOrDefault("used", 0));
+        response.put("limit", usageData.getOrDefault("limit", 500));
+        
         return ResponseEntity.ok()
             .header(HttpHeaders.CACHE_CONTROL, "no-cache, no-store, must-revalidate")
             .header(HttpHeaders.PRAGMA, "no-cache")
             .header(HttpHeaders.EXPIRES, "0")
-            .body(lookupService.getUsage(userId));
+            .body(response);
     }
     
     @GetMapping("/me")

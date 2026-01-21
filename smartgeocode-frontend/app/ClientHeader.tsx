@@ -9,13 +9,12 @@ export default function ClientHeader() {
 
   useEffect(() => {
     const checkAuth = () => {
-        // Check for 'token' (matching Login/Dashboard)
         const token = localStorage.getItem('token');
         setIsLoggedIn(!!token);
         setEmail(localStorage.getItem('email') || '');
     };
     checkAuth();
-    // Poll every second to sync login state across tabs
+    // Poll to keep UI in sync
     const interval = setInterval(checkAuth, 1000);
     return () => clearInterval(interval);
   }, []);
@@ -29,7 +28,7 @@ export default function ClientHeader() {
     <div className="flex items-center space-x-6">
       {isLoggedIn ? (
         <>
-          {/* FIX: Text is now white to match the red header */}
+          {/* FIX: FORCE TEXT-WHITE */}
           <span className="text-white font-medium hidden sm:inline border-r border-red-400 pr-4">
             {email}
           </span>

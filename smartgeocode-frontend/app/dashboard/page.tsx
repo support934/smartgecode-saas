@@ -17,8 +17,10 @@ export default function Dashboard() {
   const [error, setError] = useState('');
   const [showHelp, setShowHelp] = useState(false);
   
-  // Polling State
+  // LIVE POLLING STATE
   const [pollInterval, setPollInterval] = useState<NodeJS.Timeout | null>(null);
+  // Ref is critical for setInterval to see the current email
+  const emailRef = useRef('');
 
   // Tabs State
   const [activeTab, setActiveTab] = useState<'single' | 'batch'>('batch');
@@ -37,10 +39,12 @@ export default function Dashboard() {
     if (typeof window !== 'undefined') {
       const storedEmail = (localStorage.getItem('email') || '').toLowerCase().trim();
       setEmail(storedEmail);
+      emailRef.current = storedEmail; // Sync ref immediately
       
       const token = localStorage.getItem('token'); 
 
       if (storedEmail) {
+        // 1. Fetch Subscription & Load Batches
         fetch(`/api/me?email=${encodeURIComponent(storedEmail)}`)
           .then(res => res.json())
           .then(data => {
@@ -53,19 +57,9 @@ export default function Dashboard() {
         setSubscription('free');
       }
 
+      // 2. Fetch Usage
       if (token) {
-        fetch('/api/usage', {
-          headers: { 'Authorization': `Bearer ${token}` },
-        })
-          .then(res => res.json())
-          .then(data => {
-            setUsage(data);
-            setUsageLoading(false);
-          })
-          .catch(err => {
-            console.error(err);
-            setUsageLoading(false);
-          });
+        fetchUsage(token);
       } else {
         setUsageLoading(false);
       }
@@ -74,28 +68,53 @@ export default function Dashboard() {
     return () => stopPolling();
   }, []);
 
-  // --- POLLING LOGIC ---
+  const fetchUsage = (token: string) => {
+      fetch('/api/usage', {
+          headers: { 'Authorization': `Bearer ${token}` },
+      })
+      .then(res => res.json())
+      .then(data => {
+          setUsage(data);
+          setUsageLoading(false);
+      })
+      .catch(console.error);
+  };
+
+  // --- LIVE POLLING LOGIC ---
   const startPolling = (batchId: number) => {
     stopPolling(); // Clear existing
+    
+    // Use REF to get email inside interval
+    const currentEmail = emailRef.current || localStorage.getItem('email') || '';
+    if (!currentEmail) return;
+
     const interval = setInterval(async () => {
       try {
-        const res = await fetch(`/api/batch/${batchId}?email=${encodeURIComponent(email)}`);
+        const res = await fetch(`/api/batch/${batchId}?email=${encodeURIComponent(currentEmail)}`);
         const data = await res.json();
         
+        // 1. Update UI with latest stats and preview rows
         setCurrentBatch((prev: any) => ({
             ...prev,
             status: data.status,
             processedRows: data.processedRows,
             totalRows: data.totalRows,
-            preview: data.preview || [] // Updates table LIVE
+            preview: data.preview || [] // This populates the table LIVE
         }));
 
+        // 2. Update Usage Counter LIVE
+        const token = localStorage.getItem('token');
+        if (token) fetchUsage(token);
+
+        // 3. Stop if done
         if (data.status === 'complete' || data.status === 'failed') {
             stopPolling();
-            loadBatches(email); // Refresh history
+            loadBatches(currentEmail); // Refresh history list
             toast.success(data.status === 'complete' ? 'Batch Complete!' : 'Batch Failed');
         }
-      } catch (e) { stopPolling(); }
+      } catch (e) { 
+          // Ignore transient network errors during polling
+      }
     }, 2000); // Poll every 2 seconds
     setPollInterval(interval);
   };
@@ -131,18 +150,21 @@ export default function Dashboard() {
     try {
       const res = await fetch('/api/batch-geocode', {
         method: 'POST',
-        headers: { 'Authorization': `Bearer ${token}` },
+        headers: {
+            'Authorization': `Bearer ${token}` 
+        },
         body: formData,
       });
 
       if (!res.ok) {
         const errData = await res.json().catch(() => ({}));
-        if (res.status === 403) throw new Error(errData.message || "Limit reached. Upgrade to Premium.");
+        if (res.status === 403) throw new Error(errData.message || "Monthly limit reached. Please upgrade.");
         throw new Error(errData.message || `HTTP error: ${res.status}`);
       }
 
       const data = await res.json();
       if (data.status === 'success') {
+        // Init UI immediately
         setCurrentBatch({
             batchId: data.batchId,
             status: 'processing',
@@ -152,16 +174,11 @@ export default function Dashboard() {
         });
         
         loadBatches(email);
-        toast.success('Batch started!');
+        toast.success('Batch started! Processing...');
+        
+        // START POLLING
         startPolling(data.batchId);
         
-        // Refresh usage
-        if (token) {
-             setTimeout(() => {
-                 fetch('/api/usage', { headers: { 'Authorization': `Bearer ${token}` } })
-                    .then(r => r.json()).then(d => setUsage(d));
-             }, 2000);
-        }
       } else {
         setError(data.message || 'Batch processing failed');
         toast.error('Batch failed');
@@ -180,10 +197,10 @@ export default function Dashboard() {
   };
 
   const downloadSample = () => {
-    const csv = `address,city,state,zip,country\n` +
-                `1600 Pennsylvania Ave NW,Washington,DC,20500,USA\n` +
-                `Empire State Building,New York,NY,10118,USA\n` +
-                `10 Downing Street,London,,SW1A 2AA,UK\n`;
+    const csv = `address,landmark,city,state,country\n` +
+                `1600 Pennsylvania Ave NW,White House,Washington,DC,USA\n` +
+                `Empire State Building,,New York,NY,USA\n` +
+                `10 Downing Street,,London,,UK\n`;
     const blob = new Blob([csv], { type: 'text/csv' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -211,10 +228,7 @@ export default function Dashboard() {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ email, address, result: data }),
         });
-        if(token) {
-             fetch('/api/usage', { headers: { 'Authorization': `Bearer ${token}` } })
-                .then(r => r.json()).then(d => setUsage(d));
-        }
+        if(token) fetchUsage(token);
         toast.success('Results sent to your email!');
       } else {
         toast.error(data.message || 'Geocode failed');
@@ -336,8 +350,7 @@ export default function Dashboard() {
         {/* --- BATCH UPLOAD VIEW --- */}
         {activeTab === 'batch' && (
           <div className="grid lg:grid-cols-3 gap-8 animate-in fade-in zoom-in-95 duration-200">
-            
-            {/* Left: Upload Column */}
+            {/* Left: Upload */}
             <div className="lg:col-span-2 space-y-8">
                 <div className="bg-white rounded-2xl shadow-lg p-8 border border-gray-100">
                     <div className="flex justify-between items-center mb-6">
@@ -394,6 +407,7 @@ export default function Dashboard() {
                         </div>
                     )}
 
+                    {/* LIVE PROGRESS & RESULTS */}
                     {currentBatch && (
                         <div className="bg-white p-8 rounded-2xl shadow border border-gray-100 animate-in slide-in-from-bottom-4 mt-8">
                             <div className="flex justify-between items-center mb-4">

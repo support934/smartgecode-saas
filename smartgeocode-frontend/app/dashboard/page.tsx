@@ -4,48 +4,53 @@ import { useState, useEffect, useRef } from 'react';
 import toast, { Toaster } from 'react-hot-toast';
 import { loadStripe } from '@stripe/stripe-js';
 
-// Load Stripe promise
+// Load Stripe promise (ensure your ENV variable is set)
 const stripePromise = loadStripe(process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY!);
 
 export default function Dashboard() {
+  // --- STATE MANAGEMENT ---
+  // User & Subscription Status
   const [subscription, setSubscription] = useState<'free' | 'premium' | 'loading'>('loading');
   const [email, setEmail] = useState<string>('');
+  
+  // Batch Processing State
   const [batches, setBatches] = useState<any[]>([]);
   const [file, setFile] = useState<File | null>(null);
   const [loading, setLoading] = useState(false);
   const [currentBatch, setCurrentBatch] = useState<any>(null);
+  
+  // UI State
   const [error, setError] = useState('');
   const [showHelp, setShowHelp] = useState(false);
-  
-  // LIVE POLLING REFS (Fixes Stale State & Toast Spam)
-  const [pollInterval, setPollInterval] = useState<NodeJS.Timeout | null>(null);
-  const emailRef = useRef(''); 
-  const notifiedRef = useRef<Set<number>>(new Set()); // Tracks batches already toasted
-
-  // TABS & VIEWS
   const [activeTab, setActiveTab] = useState<'single' | 'batch'>('batch');
 
-  // SINGLE LOOKUP
+  // Single Lookup State
   const [address, setAddress] = useState('');
   const [singleResults, setSingleResults] = useState<any>(null);
   const [singleLoading, setSingleLoading] = useState(false);
   const lastAddressRef = useRef<string>('');
 
-  // USAGE STATS
+  // Usage Stats State
   const [usage, setUsage] = useState({ used: 0, limit: 500 });
   const [usageLoading, setUsageLoading] = useState(true);
+
+  // LIVE POLLING REFS (Critical for fixing "Stale State" bugs)
+  const [pollInterval, setPollInterval] = useState<NodeJS.Timeout | null>(null);
+  const emailRef = useRef(''); // Keeps track of email inside intervals
+  const notifiedRef = useRef<Set<number>>(new Set()); // Tracks batches we have already notified about
 
   // --- INITIALIZATION ---
   useEffect(() => {
     if (typeof window !== 'undefined') {
+      // 1. Get Credentials
       const storedEmail = (localStorage.getItem('email') || '').toLowerCase().trim();
       setEmail(storedEmail);
-      emailRef.current = storedEmail; 
+      emailRef.current = storedEmail; // Sync ref immediately
       
       const token = localStorage.getItem('token'); 
 
       if (storedEmail) {
-        // 1. Get Subscription
+        // 2. Fetch Subscription Status
         fetch(`/api/me?email=${encodeURIComponent(storedEmail)}`)
           .then(res => res.json())
           .then(data => {
@@ -58,20 +63,21 @@ export default function Dashboard() {
         setSubscription('free');
       }
 
-      // 2. Get Usage
+      // 3. Fetch Usage Stats
       if (token) {
         fetchUsage(token);
       } else {
         setUsageLoading(false);
       }
     }
-    // Cleanup on unmount
+    
+    // Cleanup polling on unmount
     return () => stopPolling();
   }, []);
 
   // --- HELPER: FETCH USAGE (With Cache Busting) ---
   const fetchUsage = (token: string) => {
-      // ?t= timestamp forces browser to get fresh data
+      // We append ?t=... to force the browser to actually hit the server
       fetch(`/api/usage?t=${Date.now()}`, {
           headers: { 
             'Authorization': `Bearer ${token}`,
@@ -81,17 +87,18 @@ export default function Dashboard() {
       })
       .then(res => res.json())
       .then(data => {
-          // Standardized keys
+          // Standardized keys from backend logic
           setUsage({ used: data.used || 0, limit: data.limit || 500 });
           setUsageLoading(false);
       })
       .catch(console.error);
   };
 
-  // --- HELPER: LIVE POLLING ---
+  // --- HELPER: LIVE POLLING LOGIC ---
   const startPolling = (batchId: number) => {
     stopPolling(); // Clear any existing pollers
     
+    // Use REF to get email inside interval (fixes stale closure)
     const currentEmail = emailRef.current || localStorage.getItem('email') || '';
     if (!currentEmail) return;
 
@@ -100,7 +107,7 @@ export default function Dashboard() {
         const res = await fetch(`/api/batch/${batchId}?email=${encodeURIComponent(currentEmail)}`);
         const data = await res.json();
         
-        // 1. Update UI
+        // 1. Update Batch UI (Table & Progress)
         setCurrentBatch((prev: any) => ({
             ...prev,
             status: data.status,
@@ -109,32 +116,36 @@ export default function Dashboard() {
             preview: data.preview || [] 
         }));
 
-        // 2. Refresh Usage Counter
+        // 2. Refresh Usage Counter LIVE
         const token = localStorage.getItem('token');
         if (token) fetchUsage(token);
 
-        // 3. Handle Completion (Without Toast Spam)
+        // 3. Check for Completion
         if (data.status === 'complete' || data.status === 'failed') {
-            stopPolling(); // Stop the loop immediately
-            loadBatches(currentEmail); // Refresh history
+            stopPolling(); // Stop the loop
+            loadBatches(currentEmail); // Refresh history list
             
-            // CHECK IF ALREADY NOTIFIED
+            // PREVENT TOAST SPAM: Only notify if we haven't already
             if (!notifiedRef.current.has(batchId)) {
-                if (data.status === 'complete') toast.success('Batch Complete!');
+                if (data.status === 'complete') toast.success('Batch Processing Complete!');
                 else toast.error('Batch Failed');
                 notifiedRef.current.add(batchId); // Mark as notified
             }
         }
       } catch (e) { 
-          // Ignore network blips, keep polling
+          // Ignore network blips during polling
+          console.log("Polling tick failed, retrying...");
       }
     }, 2000); // Poll every 2 seconds
+    
     setPollInterval(interval);
   };
 
   const stopPolling = () => {
-    if (pollInterval) clearInterval(pollInterval);
-    setPollInterval(null);
+    if (pollInterval) {
+        clearInterval(pollInterval);
+        setPollInterval(null);
+    }
   };
 
   // --- ACTIONS ---
@@ -170,13 +181,16 @@ export default function Dashboard() {
 
       if (!res.ok) {
         const errData = await res.json().catch(() => ({}));
-        if (res.status === 403) throw new Error(errData.message || "Limit reached. Upgrade to Premium.");
+        // Specific Limit Error
+        if (res.status === 403) {
+            throw new Error(errData.message || "Monthly limit reached. Please upgrade to continue.");
+        }
         throw new Error(errData.message || `HTTP error: ${res.status}`);
       }
 
       const data = await res.json();
       if (data.status === 'success') {
-        // Init UI
+        // Init UI immediately
         setCurrentBatch({
             batchId: data.batchId,
             status: 'processing',
@@ -186,11 +200,13 @@ export default function Dashboard() {
         });
         
         loadBatches(email);
-        toast.success('Batch started!');
+        toast.success('Batch started! Processing in background...');
+        
+        // START POLLING
         startPolling(data.batchId);
       } else {
-        setError(data.message || 'Batch failed');
-        toast.error('Batch failed');
+        setError(data.message || 'Batch processing failed');
+        toast.error('Batch failed to start');
       }
     } catch (err: unknown) {
       const errorMessage = err instanceof Error ? err.message : 'Unknown error';
@@ -206,6 +222,7 @@ export default function Dashboard() {
   };
 
   const downloadSample = () => {
+    // Generates a sample CSV on the fly
     const csv = `address,landmark,city,state,country\n` +
                 `1600 Pennsylvania Ave NW,White House,Washington,DC,USA\n` +
                 `Empire State Building,,New York,NY,USA\n` +
@@ -232,18 +249,22 @@ export default function Dashboard() {
       
       if (data.status === 'success') {
         lastAddressRef.current = address;
-        await fetch('/api/email', {
+        // Optional: Send email in background
+        fetch('/api/email', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ email, address, result: data }),
-        });
+        }).catch(console.error);
+
+        // Update Usage Counter Immediately
         if(token) fetchUsage(token);
+        
         toast.success('Result found!');
       } else {
         toast.error(data.message || 'Geocode failed');
       }
     } catch (error) {
-      toast.error('Connection error');
+      toast.error('Connection error - check your network.');
     } finally {
       setSingleLoading(false);
     }
@@ -265,6 +286,7 @@ export default function Dashboard() {
     } catch (error) { toast.error('Upgrade failed'); }
   };
 
+  // --- RENDER STATES ---
   if (subscription === 'loading') {
     return (
       <div className="min-h-screen flex items-center justify-center">
@@ -273,12 +295,12 @@ export default function Dashboard() {
     );
   }
 
-  // --- RENDER ---
   return (
     <div className="min-h-screen bg-gray-50">
       <Toaster position="top-right" />
 
-      {/* TOOLBAR */}
+      {/* DASHBOARD TOOLBAR */}
+      {/* Replaces the old Header to avoid Double-Header issue with Layout.tsx */}
       <div className="bg-white border-b shadow-sm sticky top-0 z-40 px-6 py-4">
         <div className="max-w-7xl mx-auto flex flex-col md:flex-row items-center justify-between">
           <div className="flex items-center space-x-4 mb-3 md:mb-0">
@@ -334,18 +356,38 @@ export default function Dashboard() {
 
       <main className="max-w-7xl mx-auto p-6 md:p-10">
         
-        {/* TABS */}
+        {/* TABS SELECTION */}
         <div className="flex justify-center mb-8">
             <div className="bg-white p-1 rounded-xl shadow-sm border border-gray-200 inline-flex">
-                <button onClick={() => setActiveTab('batch')} className={`px-6 py-2 rounded-lg text-sm font-bold transition-all ${activeTab === 'batch' ? 'bg-red-600 text-white shadow-md' : 'text-gray-500 hover:text-gray-900'}`}>Batch Upload</button>
-                <button onClick={() => setActiveTab('single')} className={`px-6 py-2 rounded-lg text-sm font-bold transition-all ${activeTab === 'single' ? 'bg-red-600 text-white shadow-md' : 'text-gray-500 hover:text-gray-900'}`}>Single Lookup</button>
+                <button
+                    onClick={() => setActiveTab('batch')}
+                    className={`px-6 py-2 rounded-lg text-sm font-bold transition-all ${
+                        activeTab === 'batch' 
+                        ? 'bg-red-600 text-white shadow-md' 
+                        : 'text-gray-500 hover:text-gray-900'
+                    }`}
+                >
+                    Batch Upload
+                </button>
+                <button
+                    onClick={() => setActiveTab('single')}
+                    className={`px-6 py-2 rounded-lg text-sm font-bold transition-all ${
+                        activeTab === 'single' 
+                        ? 'bg-red-600 text-white shadow-md' 
+                        : 'text-gray-500 hover:text-gray-900'
+                    }`}
+                >
+                    Single Lookup
+                </button>
             </div>
         </div>
 
-        {/* BATCH VIEW */}
+        {/* ======================= */}
+        {/* BATCH UPLOAD VIEW    */}
+        {/* ======================= */}
         {activeTab === 'batch' && (
           <div className="grid lg:grid-cols-3 gap-8 animate-in fade-in zoom-in-95 duration-200">
-            {/* Left: Upload */}
+            {/* Left Column: Upload & Live Results */}
             <div className="lg:col-span-2 space-y-8">
                 <div className="bg-white rounded-2xl shadow-lg p-8 border border-gray-100">
                     <div className="flex justify-between items-center mb-6">
@@ -364,21 +406,33 @@ export default function Dashboard() {
                         </div>
                     </div>
 
+                    {/* Upload Form */}
                     <form onSubmit={handleBatchUpload}>
                         <div className="border-2 border-dashed border-gray-300 rounded-xl p-8 text-center hover:bg-gray-50 transition cursor-pointer relative group mb-6">
-                            <input type="file" accept=".csv" onChange={(e) => setFile(e.target.files?.[0] || null)} className="absolute inset-0 opacity-0 cursor-pointer w-full h-full z-10" />
+                            <input 
+                                type="file" 
+                                accept=".csv" 
+                                onChange={(e) => setFile(e.target.files?.[0] || null)}
+                                className="absolute inset-0 opacity-0 cursor-pointer w-full h-full z-10"
+                            />
                             <div className="pointer-events-none">
                                 <div className="text-5xl text-gray-300 group-hover:text-red-400 mb-4 transition-colors">☁️</div>
-                                <p className="text-lg font-medium text-gray-700">{file ? <span className="text-green-600">{file.name}</span> : "Click to Upload CSV"}</p>
-                                <p className="text-sm text-gray-400 mt-2">Max 10,000 rows per file</p>
+                                <p className="text-lg font-medium text-gray-700">
+                                    {file ? <span className="text-green-600 font-bold">{file.name}</span> : "Click to Upload CSV"}
+                                </p>
+                                <p className="text-sm text-gray-400 mt-2">Drag and drop supported</p>
                             </div>
                         </div>
-                        <button type="submit" disabled={loading} className="w-full bg-red-600 text-white py-3 rounded-xl font-bold text-lg hover:bg-red-700 disabled:opacity-50 shadow-md">
+                        <button 
+                            type="submit" 
+                            disabled={loading || !file}
+                            className="w-full bg-red-600 text-white py-3 rounded-xl font-bold text-lg hover:bg-red-700 disabled:opacity-50 shadow-md"
+                        >
                             {loading ? 'Processing...' : 'Start Batch Process'}
                         </button>
                     </form>
                     
-                    {error && <div className="mt-4 p-4 bg-red-50 text-red-700 rounded-lg font-medium">{error}</div>}
+                    {error && <div className="mt-4 p-4 bg-red-50 text-red-700 rounded-lg font-medium border border-red-200">{error}</div>}
 
                     {/* LIVE RESULTS TABLE */}
                     {currentBatch && (
@@ -392,12 +446,17 @@ export default function Dashboard() {
                                 </span>
                             </div>
                             
+                            {/* Live Progress Bar */}
                             {currentBatch.status === 'processing' && (
                                 <div className="w-full bg-gray-200 rounded-full h-2 mb-4 overflow-hidden">
-                                    <div className="bg-blue-600 h-2 transition-all duration-500" style={{ width: `${(currentBatch.processedRows / (currentBatch.totalRows || 1)) * 100}%` }}></div>
+                                    <div 
+                                        className="bg-blue-600 h-2 transition-all duration-500" 
+                                        style={{ width: `${(currentBatch.processedRows / (currentBatch.totalRows || 1)) * 100}%` }}
+                                    ></div>
                                 </div>
                             )}
 
+                            {/* Live Table */}
                             {currentBatch.preview && (
                                 <div className="overflow-x-auto border rounded-lg max-h-80">
                                     <table className="w-full text-sm text-left">
@@ -411,11 +470,11 @@ export default function Dashboard() {
                                         </thead>
                                         <tbody>
                                             {currentBatch.preview.map((row: any, i: number) => (
-                                                <tr key={i} className="border-b last:border-0 hover:bg-gray-50">
+                                                <tr key={i} className="border-b last:border-0 hover:bg-gray-50 transition-colors">
                                                     <td className="p-3 truncate max-w-xs">{row.address}</td>
                                                     <td className="p-3 font-mono text-xs">{row.lat ? `${row.lat}, ${row.lng}` : '-'}</td>
                                                     <td className="p-3 font-bold text-green-600">{row.status}</td>
-                                                    {/* MAP PIN */}
+                                                    {/* NEW: Map Pin Link */}
                                                     <td className="p-3">
                                                         {row.lat && (
                                                             <a 
@@ -423,7 +482,7 @@ export default function Dashboard() {
                                                                 target="_blank" 
                                                                 rel="noreferrer"
                                                                 className="text-xl hover:scale-110 block transition-transform"
-                                                                title="View on Map"
+                                                                title="View on Google Maps"
                                                             >
                                                                 📍
                                                             </a>
@@ -446,19 +505,25 @@ export default function Dashboard() {
                 </div>
             </div>
 
-            {/* Right: History & Tips */}
+            {/* Right Column: History & Tips */}
             <div className="space-y-6">
+                {/* Pro Tip Box */}
                 <div className="bg-blue-50 p-6 rounded-2xl border border-blue-100 shadow-sm">
                     <h4 className="font-bold text-blue-900 mb-2 flex items-center gap-2"><span>💡</span> Pro Tip</h4>
                     <p className="text-sm text-blue-800 leading-relaxed">
                         Improve accuracy by adding extra columns: <br/>
-                        <code>landmark</code>, <code>city</code>, <code>country</code>.
+                        <code className="bg-blue-100 px-1 rounded">landmark</code>, <code className="bg-blue-100 px-1 rounded">city</code>, <code className="bg-blue-100 px-1 rounded">country</code>.
                     </p>
                 </div>
 
+                {/* History Table */}
                 <div className="bg-white rounded-2xl shadow-lg p-6 border border-gray-100 h-fit max-h-96 overflow-y-auto">
                     <h3 className="font-bold text-lg mb-4 text-gray-800">History</h3>
-                    {batches.length === 0 ? <p className="text-gray-400 text-sm italic">No batches yet.</p> : (
+                    {batches.length === 0 ? (
+                        <div className="text-center py-8">
+                            <p className="text-gray-400 text-sm italic">No batches yet.</p> 
+                        </div>
+                    ) : (
                         <div className="space-y-3">
                             {batches.map(b => (
                                 <div key={b.id} className="flex justify-between items-center p-3 bg-gray-50 rounded-lg hover:bg-gray-100 transition">
@@ -478,13 +543,26 @@ export default function Dashboard() {
           </div>
         )}
 
-        {/* SINGLE LOOKUP VIEW */}
+        {/* ======================= */}
+        {/* SINGLE LOOKUP VIEW    */}
+        {/* ======================= */}
         {activeTab === 'single' && (
              <div className="max-w-2xl mx-auto bg-white p-8 rounded-2xl shadow-xl border border-gray-100 animate-in fade-in zoom-in-95 duration-200">
                  <h2 className="text-2xl font-bold mb-6 text-center text-gray-800">Single Lookup</h2>
                  <form onSubmit={handleSingleSubmit} className="space-y-4">
-                    <input type="text" value={address} onChange={e => setAddress(e.target.value)} placeholder="Enter full address (e.g. 123 Main St, New York)" className="w-full p-4 border border-gray-300 rounded-xl focus:ring-2 focus:ring-red-500 outline-none text-lg shadow-sm" required />
-                    <button type="submit" disabled={singleLoading} className="w-full bg-red-600 text-white py-4 rounded-xl font-bold text-lg hover:bg-red-700 transition disabled:opacity-50 shadow-md">
+                    <input 
+                        type="text" 
+                        value={address} 
+                        onChange={e => setAddress(e.target.value)} 
+                        placeholder="Enter full address (e.g. 123 Main St, New York)" 
+                        className="w-full p-4 border border-gray-300 rounded-xl focus:ring-2 focus:ring-red-500 outline-none text-lg shadow-sm" 
+                        required 
+                    />
+                    <button 
+                        type="submit" 
+                        disabled={singleLoading} 
+                        className="w-full bg-red-600 text-white py-4 rounded-xl font-bold text-lg hover:bg-red-700 transition disabled:opacity-50 shadow-md"
+                    >
                         {singleLoading ? 'Searching...' : 'Get Coordinates'}
                     </button>
                  </form>
@@ -497,7 +575,7 @@ export default function Dashboard() {
                             <p className="text-gray-700"><strong>Address:</strong> {singleResults.formatted_address}</p>
                         </div>
                         
-                        {/* VISUAL MAP PREVIEW */}
+                        {/* VISUAL MAP PREVIEW (OpenStreetMap) */}
                         {singleResults.lat && (
                             <div className="rounded-xl overflow-hidden border border-gray-300 shadow-lg h-64 relative group">
                                 <iframe
@@ -529,7 +607,12 @@ export default function Dashboard() {
         {showHelp && (
             <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4 backdrop-blur-sm animate-in fade-in">
                 <div className="bg-white p-8 rounded-2xl max-w-lg w-full relative shadow-2xl animate-in zoom-in-95">
-                    <button onClick={() => setShowHelp(false)} className="absolute top-4 right-4 text-gray-400 hover:text-gray-600 text-xl font-bold bg-gray-100 rounded-full w-8 h-8 flex items-center justify-center transition">×</button>
+                    <button 
+                        onClick={() => setShowHelp(false)} 
+                        className="absolute top-4 right-4 text-gray-400 hover:text-gray-600 text-xl font-bold bg-gray-100 rounded-full w-8 h-8 flex items-center justify-center transition"
+                    >
+                        ×
+                    </button>
                     <h3 className="font-bold text-2xl mb-4 text-gray-900">CSV Formatting Guide</h3>
                     <p className="text-gray-600 mb-4">Upload a standard CSV file with headers. The more details, the better the accuracy.</p>
                     
@@ -539,7 +622,10 @@ export default function Dashboard() {
                         ,,Tokyo Tower,Japan
                     </div>
                     
-                    <button onClick={() => setShowHelp(false)} className="w-full bg-red-600 text-white py-3 rounded-xl font-bold hover:bg-red-700 transition shadow-md">
+                    <button 
+                        onClick={() => setShowHelp(false)} 
+                        className="w-full bg-red-600 text-white py-3 rounded-xl font-bold hover:bg-red-700 transition shadow-md"
+                    >
                         Got it, thanks!
                     </button>
                 </div>

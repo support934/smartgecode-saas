@@ -36,11 +36,12 @@ export default function Dashboard() {
 
   // UI Toggles & Errors
   const [error, setError] = useState('');
+  const [limitReached, setLimitReached] = useState(false); // NEW: Tracks if 403 hit
   const [showHelp, setShowHelp] = useState(false);
   const [activeTab, setActiveTab] = useState<'single' | 'batch'>('batch');
 
   // ============================================================================
-  // 2. ROBUST POLLING STATE (The Fix for "Infinite Loops")
+  // 2. ROBUST POLLING STATE
   // ============================================================================
   // We track the *ID* of the batch we are currently polling. 
   // If this is null, polling is OFF. If it is a number, polling is ON.
@@ -106,7 +107,7 @@ export default function Dashboard() {
           },
       })
       .then(res => {
-          // SAFETY VALVE: If token is invalid (Backend restarted?), log out user
+          // SAFETY VALVE: If token is invalid, log out user to prevent "Stuck" state
           if (res.status === 401) {
               console.warn("Session expired (401). Redirecting to login...");
               toast.error("Session expired. Please log in again.");
@@ -136,39 +137,36 @@ export default function Dashboard() {
   // ============================================================================
   // 5. THE POLLING ENGINE (useEffect Implementation)
   // ============================================================================
-  // This replaces the old startPolling/stopPolling functions. 
-  // It automatically starts when `pollingBatchId` is set, and CLEANLY stops when it is null.
   useEffect(() => {
     let intervalId: NodeJS.Timeout;
 
-    // Only start the interval if we have a valid Batch ID to watch
     if (pollingBatchId !== null) {
-        console.log(`[Polling Engine] Starting watch for Batch #${pollingBatchId}`);
+        console.log(`[Polling Engine] Starting poll for Batch #${pollingBatchId}`);
         
         intervalId = setInterval(async () => {
             const currentEmail = emailRef.current || localStorage.getItem('email') || '';
             const token = localStorage.getItem('token'); 
 
             try {
-                // Poll the Batch Status Endpoint
+                // Poll Batch Status
                 const res = await fetch(`/api/batch/${pollingBatchId}?email=${encodeURIComponent(currentEmail)}`);
                 
                 // Handle session expiry during polling
                 if (res.status === 401) {
                     setPollingBatchId(null);
-                    localStorage.clear();
+                    localStorage.removeItem('token');
                     window.location.href = '/login';
                     return;
                 }
-                
+
                 if (!res.ok) {
-                    console.warn("Poll request failed", res.status);
+                    console.warn(`[Polling Engine] Poll failed: ${res.status}`);
                     return;
                 }
 
                 const data = await res.json();
                 
-                // Update the UI with the latest progress
+                // UPDATE UI: Sync local state with server progress
                 setCurrentBatch((prev: any) => ({
                     ...prev,
                     status: data.status,
@@ -177,42 +175,41 @@ export default function Dashboard() {
                     preview: data.preview || [] 
                 }));
 
-                // CRITICAL: Refresh Usage Counter Live on every tick
-                // This connects the backend increment to the frontend UI
+                // UPDATE USAGE: Fetch fresh counter from DB
                 if (token) {
                     fetchUsage(token);
                 }
 
-                // Check for Stop Conditions (Complete or Failed)
+                // STOP CONDITION: Is the batch done?
                 if (data.status === 'complete' || data.status === 'failed') {
-                    console.log(`[Polling Engine] Batch ${pollingBatchId} finished. Stopping.`);
+                    console.log(`[Polling Engine] Batch ${pollingBatchId} finished. Stopping Loop.`);
                     
-                    // Stop the loop by clearing state
+                    // 1. Kill the loop state
                     setPollingBatchId(null); 
                     
-                    // Refresh the history list
+                    // 2. Refresh History List
                     loadBatches(currentEmail);
 
-                    // Notification Logic (Prevent Toast Spam)
+                    // 3. Notify User (Once only)
                     if (!notifiedRef.current.has(pollingBatchId)) {
                         if (data.status === 'complete') {
                             toast.success('Batch Processing Complete!');
                         } else {
-                            toast.error('Batch Failed - Check file format.');
+                            toast.error('Batch Failed - Please check file format.');
                         }
                         notifiedRef.current.add(pollingBatchId);
                     }
                 }
-            } catch (e) { 
+            } catch (e) {
                 console.error("[Polling Engine] Network tick error:", e);
             }
-        }, 2000); // Poll every 2 seconds
+        }, 2000); // Poll frequency: 2 seconds
     }
 
-    // Cleanup function: React runs this when component unmounts OR when pollingBatchId changes
+    // Cleanup: React runs this when component unmounts OR when pollingBatchId changes
     return () => {
         if (intervalId) {
-            console.log("[Polling Engine] Cleanup triggered. Clearing interval.");
+            console.log("[Polling Engine] Cleaning up interval.");
             clearInterval(intervalId);
         }
     };
@@ -252,6 +249,7 @@ export default function Dashboard() {
 
     setLoading(true);
     setError('');
+    setLimitReached(false); // Reset limit state
     
     const formData = new FormData();
     formData.append('file', file);
@@ -275,9 +273,15 @@ export default function Dashboard() {
       // Handle Errors
       if (!res.ok) {
         const errData = await res.json().catch(() => ({}));
+        
+        // --- CRITICAL: HANDLING THE 403 LIMIT ---
         if (res.status === 403) {
-            throw new Error(errData.message || "Monthly usage limit reached. Please upgrade to continue.");
+            setLimitReached(true); // Trigger the UI Banner
+            // Do NOT set generic error text, the banner handles it
+            setLoading(false);
+            return;
         }
+        
         throw new Error(errData.message || `Upload failed with status: ${res.status}`);
       }
 
@@ -336,6 +340,7 @@ export default function Dashboard() {
   const handleSingleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setSingleLoading(true);
+    setLimitReached(false);
     const token = localStorage.getItem('token');
     
     const headers: HeadersInit = {};
@@ -350,8 +355,15 @@ export default function Dashboard() {
       
       // Detailed Error Handling
       if (!res.ok) {
-          if (res.status === 403) throw new Error("Limit Reached: Please upgrade your plan.");
-          if (res.status === 401) throw new Error("Unauthorized: Please log in again.");
+          if (res.status === 403) {
+              setLimitReached(true); // Trigger UI Banner
+              throw new Error("Monthly limit reached."); // Clean exit
+          }
+          if (res.status === 401) {
+              localStorage.removeItem('token');
+              window.location.href = '/login';
+              throw new Error("Unauthorized: Session expired.");
+          }
           throw new Error(`Geocode failed: ${res.statusText}`);
       }
 
@@ -376,8 +388,9 @@ export default function Dashboard() {
         toast.error(data.message || 'Geocode failed - No result found.');
       }
     } catch (error: any) {
-      console.error(error);
-      toast.error(error.message || 'Connection error. Please try again.');
+      if (error.message !== "Monthly limit reached.") {
+          toast.error(error.message || 'Connection error. Please try again.');
+      }
     } finally {
       setSingleLoading(false);
     }
@@ -582,8 +595,36 @@ export default function Dashboard() {
                         </button>
                     </form>
                     
-                    {/* Error Message Display */}
-                    {error && (
+                    {/* NEW: UPSELL BANNER (Replaces Generic Error) */}
+                    {limitReached && (
+                        <div className="mt-6 p-6 bg-red-50 rounded-2xl border-l-8 border-red-500 shadow-md animate-in slide-in-from-left-2">
+                            <div className="flex justify-between items-start">
+                                <div>
+                                    <h3 className="text-2xl font-bold text-red-800 mb-2">🚫 Monthly Limit Reached</h3>
+                                    <p className="text-red-700 mb-4 leading-relaxed">
+                                        You have hit the limit on the Free Plan. 
+                                        To continue processing this file and get more lookups, please upgrade to Pro.
+                                    </p>
+                                    <ul className="list-disc list-inside text-red-800 text-sm mb-6 space-y-1">
+                                        <li>Increase limit to 10,000 lookups</li>
+                                        <li>Priority Processing</li>
+                                        <li>Only <strong>$29/month</strong></li>
+                                    </ul>
+                                </div>
+                                <div className="text-4xl">🛑</div>
+                            </div>
+                            
+                            <button 
+                                onClick={handleUpsell} 
+                                className="w-full bg-red-600 text-white font-bold py-4 rounded-xl hover:bg-red-700 transition shadow-lg text-lg flex items-center justify-center gap-2"
+                            >
+                                Upgrade to Pro Now ⚡
+                            </button>
+                        </div>
+                    )}
+                    
+                    {/* Regular Error Message Display (Only if NOT limit reached) */}
+                    {error && !limitReached && (
                         <div className="mt-6 p-4 bg-red-50 text-red-700 rounded-xl font-medium border border-red-200 flex items-start gap-3 shadow-sm">
                             <span className="text-xl">⚠️</span>
                             <div>
@@ -642,7 +683,7 @@ export default function Dashboard() {
                             {currentBatch.preview && currentBatch.preview.length > 0 ? (
                                 <div className="overflow-x-auto border rounded-xl max-h-96 shadow-sm">
                                     <table className="w-full text-sm text-left">
-                                        <thead className="bg-gray-50 sticky top-0 z-10">
+                                        <thead className="bg-gray-50 sticky top-0 z-10 shadow-sm">
                                             <tr>
                                                 <th className="p-4 font-semibold text-gray-700 bg-gray-50 border-b">Address</th>
                                                 <th className="p-4 font-semibold text-gray-700 bg-gray-50 border-b">Lat/Lng</th>
@@ -654,9 +695,9 @@ export default function Dashboard() {
                                             {currentBatch.preview.map((row: any, i: number) => (
                                                 <tr key={i} className="hover:bg-gray-50 transition-colors">
                                                     <td className="p-4 truncate max-w-xs text-gray-700 font-medium">{row.address}</td>
-                                                    <td className="p-4 font-mono text-xs text-gray-600">{row.lat ? `${row.lat}, ${row.lng}` : '-'}</td>
+                                                    <td className="p-4 font-mono text-xs text-gray-500">{row.lat ? `${row.lat}, ${row.lng}` : '-'}</td>
                                                     <td className="p-4 font-bold text-green-600">{row.status}</td>
-                                                    {/* NEW: Map Pin Link */}
+                                                    {/* Map Pin Link */}
                                                     <td className="p-4 text-center">
                                                         {row.lat && (
                                                             <a 
@@ -784,6 +825,21 @@ export default function Dashboard() {
                         {singleLoading ? 'Searching...' : 'Get Coordinates'}
                     </button>
                  </form>
+                 
+                 {/* Upsell Logic for Single Lookup */}
+                 {limitReached && (
+                    <div className="mt-6 p-6 bg-red-50 rounded-2xl border-l-8 border-red-500 shadow-md animate-in slide-in-from-left-2">
+                        <div className="flex justify-between items-start">
+                            <div>
+                                <h3 className="text-2xl font-bold text-red-800 mb-2">🚫 Monthly Limit Reached</h3>
+                                <p className="text-red-700 mb-4">You have hit the limit on the Free Plan. Upgrade to continue.</p>
+                            </div>
+                        </div>
+                        <button onClick={handleUpsell} className="w-full bg-red-600 text-white font-bold py-4 rounded-xl hover:bg-red-700 transition shadow-lg text-lg">
+                            Upgrade to Pro Now ⚡
+                        </button>
+                    </div>
+                 )}
                  
                  {/* Single Result Display */}
                  {singleResults && (

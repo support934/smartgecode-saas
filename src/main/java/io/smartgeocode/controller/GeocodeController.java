@@ -94,7 +94,7 @@ public class GeocodeController {
     }
 
     public GeocodeController() {
-        System.out.println("=== GeocodeController Live: Heavy-Duty Version Loaded (v2.2) ===");
+        System.out.println("=== GeocodeController Live: Heavy-Duty Version Loaded (v2.3 - Compilation Fixed) ===");
     }
 
     static {
@@ -156,6 +156,7 @@ public class GeocodeController {
     }
 
     // === 1. SINGLE LOOKUP ===
+    // FIX: Return type changed to ResponseEntity to match return statements
     @GetMapping("/geocode")
     public ResponseEntity<Map<String, Object>> geocode(@RequestParam("address") String addr, @RequestHeader(value = "Authorization", required = false) String authHeader) {
         if (addr == null || addr.isEmpty()) {
@@ -496,7 +497,7 @@ public class GeocodeController {
                     List<Map<String, String>> preview = new ArrayList<>();
                     // Skip header (index 0)
                     for(int i=1; i<Math.min(lines.length, 51); i++) {
-                        String[] cols = lines[i].split("\",\""); // Basic CSV split
+                        String[] cols = lines[i].split("\",\""); // Basic CSV split handling quoted commas
                         if(cols.length >= 4) {
                             preview.add(Map.of(
                                 "address", cols[0].replace("\"", ""), 
@@ -642,7 +643,7 @@ public class GeocodeController {
         return Jwts.builder().setSubject(email).claim("userId", userId).setIssuedAt(new Date()).setExpiration(new Date(System.currentTimeMillis() + 604800000)).signWith(SignatureAlgorithm.HS256, JWT_SECRET).compact();
     }
     
-    // UPDATED USAGE ENDPOINT with Explicit Keys & Cache Busting
+    // Updated Usage Endpoint with Cache Busting Headers
     @GetMapping("/usage")
     public ResponseEntity<Map<String, Object>> getUsage(@RequestHeader(value = "Authorization", required = false) String authHeader) {
         Long userId = extractUserId(authHeader);

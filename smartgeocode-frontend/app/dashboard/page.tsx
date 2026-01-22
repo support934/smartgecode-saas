@@ -9,6 +9,7 @@ const stripePromise = loadStripe(process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY!
 
 export default function Dashboard() {
   // --- STATE MANAGEMENT ---
+  
   // User & Subscription Status
   const [subscription, setSubscription] = useState<'free' | 'premium' | 'loading'>('loading');
   const [email, setEmail] = useState<string>('');
@@ -41,7 +42,9 @@ export default function Dashboard() {
 
   // --- INITIALIZATION ---
   useEffect(() => {
+    // Only run on client side
     if (typeof window !== 'undefined') {
+      
       // 1. Get Credentials
       const storedEmail = (localStorage.getItem('email') || '').toLowerCase().trim();
       setEmail(storedEmail);
@@ -52,13 +55,19 @@ export default function Dashboard() {
       if (storedEmail) {
         // 2. Fetch Subscription Status
         fetch(`/api/me?email=${encodeURIComponent(storedEmail)}`)
-          .then(res => res.json())
+          .then(res => {
+              if (!res.ok) throw new Error("Failed to fetch user");
+              return res.json();
+          })
           .then(data => {
             const status = data.subscription_status || 'free';
             setSubscription(status);
             loadBatches(storedEmail);
           })
-          .catch(() => setSubscription('free'));
+          .catch((err) => {
+              console.error("Auth check failed:", err);
+              setSubscription('free');
+          });
       } else {
         setSubscription('free');
       }
@@ -77,6 +86,8 @@ export default function Dashboard() {
 
   // --- HELPER: FETCH USAGE (With Cache Busting) ---
   const fetchUsage = (token: string) => {
+      console.log(`Fetching usage at ${new Date().toISOString()}`); // Debug Log
+      
       // We append ?t=... to force the browser to actually hit the server
       fetch(`/api/usage?t=${Date.now()}`, {
           headers: { 
@@ -85,13 +96,19 @@ export default function Dashboard() {
             'Pragma': 'no-cache'
           },
       })
-      .then(res => res.json())
+      .then(res => {
+          if (!res.ok) throw new Error("Usage fetch failed");
+          return res.json();
+      })
       .then(data => {
           // Standardized keys from backend logic
           setUsage({ used: data.used || 0, limit: data.limit || 500 });
           setUsageLoading(false);
       })
-      .catch(console.error);
+      .catch(err => {
+          console.error("Usage Error:", err);
+          setUsageLoading(false);
+      });
   };
 
   // --- HELPER: LIVE POLLING LOGIC ---
@@ -100,7 +117,12 @@ export default function Dashboard() {
     
     // Use REF to get email inside interval (fixes stale closure)
     const currentEmail = emailRef.current || localStorage.getItem('email') || '';
-    if (!currentEmail) return;
+    if (!currentEmail) {
+        console.warn("Cannot start polling: No email found in ref.");
+        return;
+    }
+
+    console.log(`Starting polling for Batch ID: ${batchId}`);
 
     const interval = setInterval(async () => {
       try {
@@ -108,8 +130,9 @@ export default function Dashboard() {
         const data = await res.json();
         
         // 1. Update Batch UI (Table & Progress)
+        // Use functional state update to ensure we don't lose previous state if needed
         setCurrentBatch((prev: any) => ({
-            ...prev,
+            ...prev, // Keep existing fields like batchId
             status: data.status,
             processedRows: data.processedRows,
             totalRows: data.totalRows,
@@ -122,19 +145,23 @@ export default function Dashboard() {
 
         // 3. Check for Completion
         if (data.status === 'complete' || data.status === 'failed') {
+            console.log(`Batch ${batchId} finished with status: ${data.status}`);
             stopPolling(); // Stop the loop
             loadBatches(currentEmail); // Refresh history list
             
             // PREVENT TOAST SPAM: Only notify if we haven't already
             if (!notifiedRef.current.has(batchId)) {
-                if (data.status === 'complete') toast.success('Batch Processing Complete!');
-                else toast.error('Batch Failed');
+                if (data.status === 'complete') {
+                    toast.success('Batch Processing Complete!');
+                } else {
+                    toast.error('Batch Failed - Check logs');
+                }
                 notifiedRef.current.add(batchId); // Mark as notified
             }
         }
       } catch (e) { 
           // Ignore network blips during polling
-          console.log("Polling tick failed, retrying...");
+          console.log("Polling tick failed (network error?), retrying...", e);
       }
     }, 2000); // Poll every 2 seconds
     
@@ -145,6 +172,7 @@ export default function Dashboard() {
     if (pollInterval) {
         clearInterval(pollInterval);
         setPollInterval(null);
+        console.log("Polling stopped.");
     }
   };
 
@@ -153,15 +181,23 @@ export default function Dashboard() {
     try {
       const res = await fetch(`/api/batches?email=${encodeURIComponent(userEmail)}`);
       const data = await res.json();
-      setBatches(data);
+      if (Array.isArray(data)) {
+          setBatches(data);
+      } else {
+          setBatches([]);
+      }
     } catch (err) {
       console.error('Load batches error:', err);
+      setBatches([]);
     }
   };
 
   const handleBatchUpload = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!file || !email) return;
+    if (!file || !email) {
+        toast.error("Please select a file and ensure you are logged in.");
+        return;
+    }
 
     setLoading(true);
     setError('');
@@ -171,6 +207,11 @@ export default function Dashboard() {
     formData.append('email', email);
     
     const token = localStorage.getItem('token');
+    if (!token) {
+        toast.error("Session expired. Please log in again.");
+        setLoading(false);
+        return;
+    }
 
     try {
       const res = await fetch('/api/batch-geocode', {
@@ -239,22 +280,37 @@ export default function Dashboard() {
     e.preventDefault();
     setSingleLoading(true);
     const token = localStorage.getItem('token');
+    
+    // Safety check for token
+    const headers: HeadersInit = {};
+    if (token) {
+        headers['Authorization'] = `Bearer ${token}`;
+    }
 
     try {
       const res = await fetch(`/api/geocode?address=${encodeURIComponent(address)}`, {
-          headers: { 'Authorization': `Bearer ${token}` }
+          headers: headers
       });
+      
+      // Handle non-200 responses specifically
+      if (!res.ok) {
+          if (res.status === 403) throw new Error("Limit Reached: Please upgrade your plan.");
+          if (res.status === 401) throw new Error("Unauthorized: Please log in again.");
+          throw new Error("Geocode failed: " + res.statusText);
+      }
+
       const data = await res.json();
       setSingleResults(data);
       
       if (data.status === 'success') {
         lastAddressRef.current = address;
-        // Optional: Send email in background
+        
+        // Optional: Send email in background (Fire & Forget)
         fetch('/api/email', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ email, address, result: data }),
-        }).catch(console.error);
+        }).catch(err => console.error("Email send failed (non-critical):", err));
 
         // Update Usage Counter Immediately
         if(token) fetchUsage(token);
@@ -263,8 +319,9 @@ export default function Dashboard() {
       } else {
         toast.error(data.message || 'Geocode failed');
       }
-    } catch (error) {
-      toast.error('Connection error - check your network.');
+    } catch (error: any) {
+      console.error(error);
+      toast.error(error.message || 'Connection error - check your network.');
     } finally {
       setSingleLoading(false);
     }
@@ -290,7 +347,10 @@ export default function Dashboard() {
   if (subscription === 'loading') {
     return (
       <div className="min-h-screen flex items-center justify-center">
-        <p className="text-xl font-semibold text-gray-700 animate-pulse">Loading dashboard...</p>
+        <div className="text-center">
+            <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-red-600 mx-auto mb-4"></div>
+            <p className="text-xl font-semibold text-gray-700 animate-pulse">Loading dashboard...</p>
+        </div>
       </div>
     );
   }
@@ -317,7 +377,7 @@ export default function Dashboard() {
                     <p className="text-xs text-gray-500 uppercase font-bold">Usage</p>
                     <p className="text-sm font-bold text-gray-800">{usage.used} / {usage.limit}</p>
                 </div>
-                <div className="w-32 h-2 bg-gray-200 rounded-full overflow-hidden border border-gray-300">
+                <div className="w-32 h-2 bg-gray-200 rounded-full overflow-hidden border border-gray-300 relative">
                     <div 
                         className={`h-full transition-all duration-500 ${usage.used >= usage.limit ? 'bg-red-500' : 'bg-green-500'}`} 
                         style={{ width: `${Math.min((usage.used / usage.limit) * 100, 100)}%` }}
@@ -327,7 +387,10 @@ export default function Dashboard() {
             )}
 
             {subscription === 'free' && (
-               <button onClick={handleUpsell} className="bg-yellow-400 text-red-900 px-4 py-2 rounded text-sm font-bold hover:bg-yellow-300 shadow-sm transition">
+               <button 
+                onClick={handleUpsell} 
+                className="bg-yellow-400 text-red-900 px-4 py-2 rounded text-sm font-bold hover:bg-yellow-300 shadow-sm transition transform hover:scale-105"
+               >
                 Upgrade to Pro
               </button>
             )}
@@ -345,7 +408,7 @@ export default function Dashboard() {
                     if (data.url) window.location.href = data.url;
                   } catch(e) { toast.error('Error opening billing portal'); }
                 }}
-                className="text-red-600 text-sm font-semibold hover:underline"
+                className="text-red-600 text-sm font-semibold hover:underline cursor-pointer"
               >
                 Manage Plan
               </button>
@@ -398,11 +461,11 @@ export default function Dashboard() {
                             )}
                         </div>
                         <div className="space-x-4 text-sm font-medium">
-                            <button onClick={downloadSample} className="text-red-600 hover:text-red-800 flex items-center gap-1">
+                            <button onClick={downloadSample} className="text-red-600 hover:text-red-800 flex items-center gap-1 cursor-pointer">
                                 <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" /></svg>
                                 Sample CSV
                             </button>
-                            <button onClick={() => setShowHelp(true)} className="text-gray-500 hover:text-gray-700">Help?</button>
+                            <button onClick={() => setShowHelp(true)} className="text-gray-500 hover:text-gray-700 cursor-pointer">Help?</button>
                         </div>
                     </div>
 
@@ -426,13 +489,18 @@ export default function Dashboard() {
                         <button 
                             type="submit" 
                             disabled={loading || !file}
-                            className="w-full bg-red-600 text-white py-3 rounded-xl font-bold text-lg hover:bg-red-700 disabled:opacity-50 shadow-md"
+                            className="w-full bg-red-600 text-white py-3 rounded-xl font-bold text-lg hover:bg-red-700 disabled:opacity-50 shadow-md transition transform hover:-translate-y-0.5 active:translate-y-0"
                         >
                             {loading ? 'Processing...' : 'Start Batch Process'}
                         </button>
                     </form>
                     
-                    {error && <div className="mt-4 p-4 bg-red-50 text-red-700 rounded-lg font-medium border border-red-200">{error}</div>}
+                    {error && (
+                        <div className="mt-4 p-4 bg-red-50 text-red-700 rounded-lg font-medium border border-red-200 flex items-start gap-2">
+                            <span>⚠️</span>
+                            <span>{error}</span>
+                        </div>
+                    )}
 
                     {/* LIVE RESULTS TABLE */}
                     {currentBatch && (
@@ -442,22 +510,25 @@ export default function Dashboard() {
                                     Results ({currentBatch.processedRows}/{currentBatch.totalRows || '?'})
                                 </h3>
                                 <span className={`px-3 py-1 rounded font-bold text-sm ${currentBatch.status === 'complete' ? 'bg-green-100 text-green-700' : 'bg-blue-100 text-blue-700'}`}>
-                                    {currentBatch.status.toUpperCase()}
+                                    {currentBatch.status ? currentBatch.status.toUpperCase() : "UNKNOWN"}
                                 </span>
                             </div>
                             
                             {/* Live Progress Bar */}
                             {currentBatch.status === 'processing' && (
-                                <div className="w-full bg-gray-200 rounded-full h-2 mb-4 overflow-hidden">
-                                    <div 
-                                        className="bg-blue-600 h-2 transition-all duration-500" 
-                                        style={{ width: `${(currentBatch.processedRows / (currentBatch.totalRows || 1)) * 100}%` }}
-                                    ></div>
+                                <div className="mb-4">
+                                    <div className="w-full bg-gray-200 rounded-full h-2 overflow-hidden">
+                                        <div 
+                                            className="bg-blue-600 h-2 transition-all duration-500 ease-out" 
+                                            style={{ width: `${(currentBatch.processedRows / (currentBatch.totalRows || 1)) * 100}%` }}
+                                        ></div>
+                                    </div>
+                                    <p className="text-xs text-gray-400 mt-1 text-center animate-pulse">Do not close this window...</p>
                                 </div>
                             )}
 
                             {/* Live Table */}
-                            {currentBatch.preview && (
+                            {currentBatch.preview && currentBatch.preview.length > 0 ? (
                                 <div className="overflow-x-auto border rounded-lg max-h-80">
                                     <table className="w-full text-sm text-left">
                                         <thead className="bg-gray-50 sticky top-0">
@@ -493,10 +564,17 @@ export default function Dashboard() {
                                         </tbody>
                                     </table>
                                 </div>
+                            ) : (
+                                <div className="text-center py-4 text-gray-400 italic text-sm">
+                                    Waiting for first result...
+                                </div>
                             )}
                             
                             {(currentBatch.status === 'complete' || currentBatch.status === 'processing') && (
-                                <button onClick={() => downloadBatch(currentBatch.batchId)} className="mt-4 w-full bg-green-600 text-white py-2 rounded-lg font-bold hover:bg-green-700 shadow-md">
+                                <button 
+                                    onClick={() => downloadBatch(currentBatch.batchId)} 
+                                    className="mt-6 w-full bg-green-600 text-white py-3 rounded-lg font-bold hover:bg-green-700 shadow-md transition"
+                                >
                                     Download Full CSV
                                 </button>
                             )}
@@ -511,8 +589,10 @@ export default function Dashboard() {
                 <div className="bg-blue-50 p-6 rounded-2xl border border-blue-100 shadow-sm">
                     <h4 className="font-bold text-blue-900 mb-2 flex items-center gap-2"><span>💡</span> Pro Tip</h4>
                     <p className="text-sm text-blue-800 leading-relaxed">
-                        Improve accuracy by adding extra columns: <br/>
-                        <code className="bg-blue-100 px-1 rounded">landmark</code>, <code className="bg-blue-100 px-1 rounded">city</code>, <code className="bg-blue-100 px-1 rounded">country</code>.
+                        Improve accuracy by adding extra columns to your CSV: <br/>
+                        <code className="bg-blue-100 px-1 rounded mx-1">landmark</code> 
+                        <code className="bg-blue-100 px-1 rounded mx-1">city</code> 
+                        <code className="bg-blue-100 px-1 rounded mx-1">country</code>
                     </p>
                 </div>
 
@@ -520,7 +600,7 @@ export default function Dashboard() {
                 <div className="bg-white rounded-2xl shadow-lg p-6 border border-gray-100 h-fit max-h-96 overflow-y-auto">
                     <h3 className="font-bold text-lg mb-4 text-gray-800">History</h3>
                     {batches.length === 0 ? (
-                        <div className="text-center py-8">
+                        <div className="text-center py-8 bg-gray-50 rounded-xl border border-dashed border-gray-200">
                             <p className="text-gray-400 text-sm italic">No batches yet.</p> 
                         </div>
                     ) : (
@@ -531,7 +611,10 @@ export default function Dashboard() {
                                         <p className="font-bold text-sm text-gray-800">Batch #{b.id}</p>
                                         <p className="text-xs text-gray-500">{new Date(b.created_at).toLocaleDateString()}</p>
                                     </div>
-                                    <button onClick={() => downloadBatch(b.id)} className="text-red-600 text-xs font-bold border border-red-200 px-2 py-1 rounded hover:bg-red-50 transition">
+                                    <button 
+                                        onClick={() => downloadBatch(b.id)} 
+                                        className="text-red-600 text-xs font-bold border border-red-200 px-3 py-1 rounded hover:bg-red-50 transition"
+                                    >
                                         Download
                                     </button>
                                 </div>
@@ -571,13 +654,25 @@ export default function Dashboard() {
                     <div className="mt-8 animate-in fade-in slide-in-from-bottom-2">
                         <div className="p-6 bg-green-50 rounded-xl border border-green-200 mb-6 shadow-sm">
                             <h3 className="font-bold text-green-900 mb-2 text-lg">✅ Result Found</h3>
-                            <p className="text-gray-700"><strong>Lat/Lng:</strong> {singleResults.lat}, {singleResults.lng}</p>
-                            <p className="text-gray-700"><strong>Address:</strong> {singleResults.formatted_address}</p>
+                            <div className="grid grid-cols-2 gap-4 text-sm text-gray-700">
+                                <div>
+                                    <p className="font-bold text-gray-900">Latitude</p>
+                                    <p className="font-mono">{singleResults.lat}</p>
+                                </div>
+                                <div>
+                                    <p className="font-bold text-gray-900">Longitude</p>
+                                    <p className="font-mono">{singleResults.lng}</p>
+                                </div>
+                                <div className="col-span-2">
+                                    <p className="font-bold text-gray-900">Formatted Address</p>
+                                    <p>{singleResults.formatted_address}</p>
+                                </div>
+                            </div>
                         </div>
                         
                         {/* VISUAL MAP PREVIEW (OpenStreetMap) */}
                         {singleResults.lat && (
-                            <div className="rounded-xl overflow-hidden border border-gray-300 shadow-lg h-64 relative group">
+                            <div className="rounded-xl overflow-hidden border border-gray-300 shadow-lg h-64 relative group mt-6">
                                 <iframe
                                     width="100%"
                                     height="100%"
@@ -617,9 +712,11 @@ export default function Dashboard() {
                     <p className="text-gray-600 mb-4">Upload a standard CSV file with headers. The more details, the better the accuracy.</p>
                     
                     <div className="bg-gray-800 text-gray-100 p-4 rounded-lg font-mono text-xs overflow-x-auto mb-6 shadow-inner">
-                        address,landmark,city,country<br/>
-                        1600 Penn Ave,White House,Washington,USA<br/>
-                        ,,Tokyo Tower,Japan
+                        <code>
+                            address,landmark,city,country<br/>
+                            1600 Penn Ave,White House,Washington,USA<br/>
+                            ,,Tokyo Tower,Japan
+                        </code>
                     </div>
                     
                     <button 

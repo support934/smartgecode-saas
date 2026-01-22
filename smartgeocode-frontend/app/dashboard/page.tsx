@@ -4,45 +4,50 @@ import { useState, useEffect, useRef } from 'react';
 import toast, { Toaster } from 'react-hot-toast';
 import { loadStripe } from '@stripe/stripe-js';
 
-// Load Stripe promise (ensure your ENV variable is set correctly)
+// ============================================================================
+// CONFIGURATION
+// ============================================================================
+// Load Stripe promise (ensure your ENV variable is set correctly in .env.local)
 const stripePromise = loadStripe(process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY!);
 
 export default function Dashboard() {
-  // =========================================================================================
+  // ============================================================================
   // 1. STATE MANAGEMENT
-  // =========================================================================================
+  // ============================================================================
 
-  // User Identity & Subscription Status
+  // --- User Identity & Subscription Status ---
   const [subscription, setSubscription] = useState<'free' | 'premium' | 'loading'>('loading');
   const [email, setEmail] = useState<string>('');
   
-  // Batch Processing Data
+  // --- Batch Processing Data ---
   const [batches, setBatches] = useState<any[]>([]);
   const [currentBatch, setCurrentBatch] = useState<any>(null);
   
-  // File Upload State
+  // --- File Upload State ---
   const [file, setFile] = useState<File | null>(null);
   const [loading, setLoading] = useState(false);
+  const [isDragOver, setIsDragOver] = useState(false); // Visual drag state
   
-  // Single Lookup State
+  // --- Single Lookup State ---
   const [address, setAddress] = useState('');
   const [singleResults, setSingleResults] = useState<any>(null);
   const [singleLoading, setSingleLoading] = useState(false);
   const lastAddressRef = useRef<string>('');
 
-  // Usage & Credit System
+  // --- Usage & Credit System ---
   const [usage, setUsage] = useState({ used: 0, limit: 500 });
   const [usageLoading, setUsageLoading] = useState(true);
 
-  // UI Toggles & Errors
+  // --- UI Toggles & Errors ---
   const [error, setError] = useState('');
-  const [limitReached, setLimitReached] = useState(false); // Tracks 403 Errors specifically
+  // CRITICAL: New state to track if we hit the 403 limit
+  const [limitReached, setLimitReached] = useState(false); 
   const [showHelp, setShowHelp] = useState(false);
   const [activeTab, setActiveTab] = useState<'single' | 'batch'>('batch');
 
-  // =========================================================================================
+  // ============================================================================
   // 2. ROBUST POLLING STATE
-  // =========================================================================================
+  // ============================================================================
   // We track the *ID* of the batch we are currently polling. 
   // If this is null, polling is OFF. If it is a number, polling is ON.
   const [pollingBatchId, setPollingBatchId] = useState<number | null>(null);
@@ -51,9 +56,9 @@ export default function Dashboard() {
   const emailRef = useRef(''); 
   const notifiedRef = useRef<Set<number>>(new Set()); // Prevents duplicate "Success" toasts
 
-  // =========================================================================================
+  // ============================================================================
   // 3. INITIALIZATION & AUTH CHECK
-  // =========================================================================================
+  // ============================================================================
   useEffect(() => {
     // Ensure code only runs on the client-side
     if (typeof window !== 'undefined') {
@@ -94,9 +99,9 @@ export default function Dashboard() {
     }
   }, []);
 
-  // =========================================================================================
-  // 4. USAGE DATA FETCHER
-  // =========================================================================================
+  // ============================================================================
+  // 4. USAGE DATA FETCHER (With Cache Busting & 401 Protection)
+  // ============================================================================
   const fetchUsage = (token: string) => {
       // Append timestamp (?t=) to force browser to skip cache and get fresh DB values
       fetch(`/api/usage?t=${Date.now()}`, {
@@ -134,9 +139,9 @@ export default function Dashboard() {
       });
   };
 
-  // =========================================================================================
+  // ============================================================================
   // 5. THE POLLING ENGINE (useEffect Implementation)
-  // =========================================================================================
+  // ============================================================================
   useEffect(() => {
     let intervalId: NodeJS.Timeout;
 
@@ -216,9 +221,9 @@ export default function Dashboard() {
     };
   }, [pollingBatchId]);
 
-  // =========================================================================================
+  // ============================================================================
   // 6. ACTION HANDLERS
-  // =========================================================================================
+  // ============================================================================
 
   const loadBatches = async (userEmail: string) => {
     try {
@@ -250,7 +255,7 @@ export default function Dashboard() {
 
     setLoading(true);
     setError('');
-    setLimitReached(false); // Reset limit state
+    setLimitReached(false); // Reset limit state on new attempt
     
     const formData = new FormData();
     formData.append('file', file);
@@ -275,16 +280,17 @@ export default function Dashboard() {
       if (!res.ok) {
         const errData = await res.json().catch(() => ({}));
         
-        // --- CRITICAL FIX: UPSELL TRIGGER ---
-        // If we get a 403, we STOP here and trigger the Banner.
-        // We do NOT throw an Error, because that would show the generic red box.
+        // --- CRITICAL FIX: UPSELL TRIGGER (403 TRAP) ---
+        // If the backend says "403 Forbidden", it means limit hit.
+        // We set the `limitReached` state to true, which triggers the specialized Banner.
         if (res.status === 403) {
             setLimitReached(true); 
             setLoading(false);
-            return; // Exit function gracefully
+            // Do not throw generic error; return early so Banner shows
+            return;
         }
         
-        // For other errors (500, 400), throw as usual
+        // For standard errors (500, 400), throw normally
         throw new Error(errData.message || `Upload failed with status: ${res.status}`);
       }
 
@@ -310,12 +316,11 @@ export default function Dashboard() {
         toast.error('Batch failed to start');
       }
     } catch (err: unknown) {
-      // This block runs ONLY for non-403 errors now
       const errorMessage = err instanceof Error ? err.message : 'Unknown error';
       setError(errorMessage);
       toast.error(errorMessage);
     } finally {
-      // Ensure loading state is cleared (unless we hit 403 and returned early)
+      // Only clear loading if we didn't hit the 403 limit (keep UI stable for upsell)
       if (!limitReached) {
           setLoading(false);
       }
@@ -364,7 +369,7 @@ export default function Dashboard() {
       if (!res.ok) {
           if (res.status === 403) {
               setLimitReached(true); // Trigger UI Banner
-              throw new Error("Monthly limit reached."); // Throw to exit, caught below
+              throw new Error("Monthly limit reached."); // Clean exit for UI
           }
           if (res.status === 401) {
               localStorage.removeItem('token');
@@ -395,7 +400,6 @@ export default function Dashboard() {
         toast.error(data.message || 'Geocode failed - No result found.');
       }
     } catch (error: any) {
-      // Don't show toast for limit reached, let the Banner handle it
       if (error.message !== "Monthly limit reached.") {
           toast.error(error.message || 'Connection error. Please try again.');
       }
@@ -431,9 +435,24 @@ export default function Dashboard() {
       window.location.href = "mailto:sales@smartgeocode.io?subject=Enterprise%20Plan%20Inquiry";
   };
 
-  // =========================================================================================
+  // Drag & Drop Handlers
+  const onDragOver = (e: React.DragEvent) => {
+      e.preventDefault();
+      setIsDragOver(true);
+  };
+  const onDragLeave = () => setIsDragOver(false);
+  const onDrop = (e: React.DragEvent) => {
+      e.preventDefault();
+      setIsDragOver(false);
+      if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+          setFile(e.dataTransfer.files[0]);
+      }
+  };
+
+
+  // ============================================================================
   // 7. RENDER (UI)
-  // =========================================================================================
+  // ============================================================================
 
   if (subscription === 'loading') {
     return (
@@ -584,7 +603,13 @@ export default function Dashboard() {
 
                     {/* Drag & Drop Upload Zone */}
                     <form onSubmit={handleBatchUpload}>
-                        <div className="border-2 border-dashed border-gray-300 rounded-xl p-10 text-center hover:bg-gray-50 transition-all cursor-pointer relative group mb-6 hover:border-red-300">
+                        <div 
+                            className={`border-2 border-dashed rounded-xl p-10 text-center transition-all cursor-pointer relative group mb-6 
+                                ${isDragOver ? 'border-red-500 bg-red-50 scale-[1.02]' : 'border-gray-300 hover:bg-gray-50 hover:border-red-300'}`}
+                            onDragOver={onDragOver}
+                            onDragLeave={onDragLeave}
+                            onDrop={onDrop}
+                        >
                             <input 
                                 type="file" 
                                 accept=".csv" 
@@ -592,7 +617,7 @@ export default function Dashboard() {
                                 className="absolute inset-0 opacity-0 cursor-pointer w-full h-full z-10"
                             />
                             <div className="pointer-events-none">
-                                <div className="text-6xl text-gray-300 group-hover:text-red-400 mb-4 transition-colors">☁️</div>
+                                <div className={`text-6xl mb-4 transition-colors ${isDragOver ? 'text-red-500' : 'text-gray-300 group-hover:text-red-400'}`}>☁️</div>
                                 <p className="text-xl font-medium text-gray-700">
                                     {file ? <span className="text-green-600 font-bold">{file.name}</span> : "Click to Upload CSV"}
                                 </p>
@@ -628,7 +653,7 @@ export default function Dashboard() {
                                             </ul>
                                             <button 
                                                 onClick={handleUpsell} 
-                                                className="w-full bg-red-600 text-white font-bold py-4 rounded-xl hover:bg-red-700 transition shadow-lg text-lg flex items-center justify-center gap-2"
+                                                className="w-full bg-red-600 text-white font-bold py-4 rounded-xl hover:bg-red-700 transition shadow-lg text-lg flex items-center justify-center gap-2 mt-4"
                                             >
                                                 Upgrade to Pro Now ⚡
                                             </button>
@@ -640,14 +665,14 @@ export default function Dashboard() {
                                             </p>
                                             <button 
                                                 onClick={handleEnterpriseContact} 
-                                                className="w-full bg-blue-700 text-white font-bold py-4 rounded-xl hover:bg-blue-800 transition shadow-lg text-lg flex items-center justify-center gap-2"
+                                                className="w-full bg-blue-700 text-white font-bold py-4 rounded-xl hover:bg-blue-800 transition shadow-lg text-lg flex items-center justify-center gap-2 mt-4"
                                             >
                                                 Contact Sales for Enterprise 🏢
                                             </button>
                                         </>
                                     )}
                                 </div>
-                                <div className="text-4xl">🛑</div>
+                                <div className="text-5xl opacity-20">🛑</div>
                             </div>
                         </div>
                     )}
@@ -664,7 +689,7 @@ export default function Dashboard() {
                     )}
 
                     {/* Success / Processing Banner */}
-                    {currentBatch && currentBatch.status === 'processing' && (
+                    {currentBatch && currentBatch.status === 'processing' && !limitReached && (
                         <div className="mt-6 bg-green-50 border border-green-200 rounded-xl p-4 flex items-center gap-3 animate-in fade-in slide-in-from-top-2 shadow-sm">
                              <div className="bg-green-100 p-2 rounded-full text-green-600 text-xl">🚀</div>
                              <div>

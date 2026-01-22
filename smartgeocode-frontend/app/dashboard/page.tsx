@@ -41,11 +41,10 @@ export default function Dashboard() {
   const [activeTab, setActiveTab] = useState<'single' | 'batch'>('batch');
 
   // =========================================================================================
-  // 2. ROBUST POLLING STATE (THE FIX)
+  // 2. ROBUST POLLING STATE
   // =========================================================================================
   // We track the *ID* of the batch we are currently polling. 
   // If this is null, polling is OFF. If it is a number, polling is ON.
-  // This state drives the useEffect hook below.
   const [pollingBatchId, setPollingBatchId] = useState<number | null>(null);
   
   // Refs are used to access the latest state inside intervals/timeouts without closure staleness
@@ -96,7 +95,7 @@ export default function Dashboard() {
   }, []);
 
   // =========================================================================================
-  // 4. USAGE DATA FETCHER (With Cache Busting & 401 Protection)
+  // 4. USAGE DATA FETCHER
   // =========================================================================================
   const fetchUsage = (token: string) => {
       // Append timestamp (?t=) to force browser to skip cache and get fresh DB values
@@ -138,8 +137,6 @@ export default function Dashboard() {
   // =========================================================================================
   // 5. THE POLLING ENGINE (useEffect Implementation)
   // =========================================================================================
-  // This replaces the old startPolling/stopPolling functions. 
-  // It automatically starts when `pollingBatchId` is set, and CLEANLY stops when it is null.
   useEffect(() => {
     let intervalId: NodeJS.Timeout;
 
@@ -278,13 +275,16 @@ export default function Dashboard() {
       if (!res.ok) {
         const errData = await res.json().catch(() => ({}));
         
-        // --- UPSELL TRIGGER: 403 LIMIT HIT ---
+        // --- CRITICAL FIX: UPSELL TRIGGER ---
+        // If we get a 403, we STOP here and trigger the Banner.
+        // We do NOT throw an Error, because that would show the generic red box.
         if (res.status === 403) {
-            setLimitReached(true); // Trigger the UI Banner
+            setLimitReached(true); 
             setLoading(false);
-            return;
+            return; // Exit function gracefully
         }
         
+        // For other errors (500, 400), throw as usual
         throw new Error(errData.message || `Upload failed with status: ${res.status}`);
       }
 
@@ -310,11 +310,15 @@ export default function Dashboard() {
         toast.error('Batch failed to start');
       }
     } catch (err: unknown) {
+      // This block runs ONLY for non-403 errors now
       const errorMessage = err instanceof Error ? err.message : 'Unknown error';
       setError(errorMessage);
       toast.error(errorMessage);
     } finally {
-      setLoading(false);
+      // Ensure loading state is cleared (unless we hit 403 and returned early)
+      if (!limitReached) {
+          setLoading(false);
+      }
     }
   };
 
@@ -360,7 +364,7 @@ export default function Dashboard() {
       if (!res.ok) {
           if (res.status === 403) {
               setLimitReached(true); // Trigger UI Banner
-              throw new Error("Monthly limit reached."); // Clean exit for UI
+              throw new Error("Monthly limit reached."); // Throw to exit, caught below
           }
           if (res.status === 401) {
               localStorage.removeItem('token');
@@ -391,6 +395,7 @@ export default function Dashboard() {
         toast.error(data.message || 'Geocode failed - No result found.');
       }
     } catch (error: any) {
+      // Don't show toast for limit reached, let the Banner handle it
       if (error.message !== "Monthly limit reached.") {
           toast.error(error.message || 'Connection error. Please try again.');
       }
@@ -920,7 +925,7 @@ export default function Dashboard() {
         )}
 
         {/* ==================================================================== */}
-        {/* HELP MODAL OVERLAY                                                   */}
+        {/* HELP MODAL OVERLAY                                                   */}
         {/* ==================================================================== */}
         {showHelp && (
             <div className="fixed inset-0 bg-black bg-opacity-60 flex items-center justify-center z-50 p-4 backdrop-blur-sm animate-in fade-in duration-200">

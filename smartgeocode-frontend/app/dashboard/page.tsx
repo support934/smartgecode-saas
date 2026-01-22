@@ -4,13 +4,13 @@ import { useState, useEffect, useRef } from 'react';
 import toast, { Toaster } from 'react-hot-toast';
 import { loadStripe } from '@stripe/stripe-js';
 
-// Load Stripe promise (ensure your ENV variable is set)
+// Load Stripe promise (ensure your ENV variable is set correctly)
 const stripePromise = loadStripe(process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY!);
 
 export default function Dashboard() {
-  // ============================================================================
+  // =========================================================================================
   // 1. STATE MANAGEMENT
-  // ============================================================================
+  // =========================================================================================
 
   // User Identity & Subscription Status
   const [subscription, setSubscription] = useState<'free' | 'premium' | 'loading'>('loading');
@@ -36,24 +36,25 @@ export default function Dashboard() {
 
   // UI Toggles & Errors
   const [error, setError] = useState('');
-  const [limitReached, setLimitReached] = useState(false); // NEW: Tracks if 403 hit
+  const [limitReached, setLimitReached] = useState(false); // Tracks 403 Errors specifically
   const [showHelp, setShowHelp] = useState(false);
   const [activeTab, setActiveTab] = useState<'single' | 'batch'>('batch');
 
-  // ============================================================================
-  // 2. ROBUST POLLING STATE
-  // ============================================================================
+  // =========================================================================================
+  // 2. ROBUST POLLING STATE (THE FIX)
+  // =========================================================================================
   // We track the *ID* of the batch we are currently polling. 
   // If this is null, polling is OFF. If it is a number, polling is ON.
+  // This state drives the useEffect hook below.
   const [pollingBatchId, setPollingBatchId] = useState<number | null>(null);
   
   // Refs are used to access the latest state inside intervals/timeouts without closure staleness
   const emailRef = useRef(''); 
   const notifiedRef = useRef<Set<number>>(new Set()); // Prevents duplicate "Success" toasts
 
-  // ============================================================================
+  // =========================================================================================
   // 3. INITIALIZATION & AUTH CHECK
-  // ============================================================================
+  // =========================================================================================
   useEffect(() => {
     // Ensure code only runs on the client-side
     if (typeof window !== 'undefined') {
@@ -94,11 +95,11 @@ export default function Dashboard() {
     }
   }, []);
 
-  // ============================================================================
+  // =========================================================================================
   // 4. USAGE DATA FETCHER (With Cache Busting & 401 Protection)
-  // ============================================================================
+  // =========================================================================================
   const fetchUsage = (token: string) => {
-      // Append timestamp (?t=) to force browser to skip cache and hit the DB
+      // Append timestamp (?t=) to force browser to skip cache and get fresh DB values
       fetch(`/api/usage?t=${Date.now()}`, {
           headers: { 
             'Authorization': `Bearer ${token}`,
@@ -107,7 +108,7 @@ export default function Dashboard() {
           },
       })
       .then(res => {
-          // SAFETY VALVE: If token is invalid, log out user to prevent "Stuck" state
+          // SAFETY VALVE: If token is invalid (Backend restarted?), log out user to prevent "Stuck" state
           if (res.status === 401) {
               console.warn("Session expired (401). Redirecting to login...");
               toast.error("Session expired. Please log in again.");
@@ -134,9 +135,11 @@ export default function Dashboard() {
       });
   };
 
-  // ============================================================================
+  // =========================================================================================
   // 5. THE POLLING ENGINE (useEffect Implementation)
-  // ============================================================================
+  // =========================================================================================
+  // This replaces the old startPolling/stopPolling functions. 
+  // It automatically starts when `pollingBatchId` is set, and CLEANLY stops when it is null.
   useEffect(() => {
     let intervalId: NodeJS.Timeout;
 
@@ -176,6 +179,7 @@ export default function Dashboard() {
                 }));
 
                 // UPDATE USAGE: Fetch fresh counter from DB
+                // This connects the backend increment to the frontend UI
                 if (token) {
                     fetchUsage(token);
                 }
@@ -215,9 +219,9 @@ export default function Dashboard() {
     };
   }, [pollingBatchId]);
 
-  // ============================================================================
+  // =========================================================================================
   // 6. ACTION HANDLERS
-  // ============================================================================
+  // =========================================================================================
 
   const loadBatches = async (userEmail: string) => {
     try {
@@ -274,10 +278,9 @@ export default function Dashboard() {
       if (!res.ok) {
         const errData = await res.json().catch(() => ({}));
         
-        // --- CRITICAL: HANDLING THE 403 LIMIT ---
+        // --- UPSELL TRIGGER: 403 LIMIT HIT ---
         if (res.status === 403) {
             setLimitReached(true); // Trigger the UI Banner
-            // Do NOT set generic error text, the banner handles it
             setLoading(false);
             return;
         }
@@ -357,7 +360,7 @@ export default function Dashboard() {
       if (!res.ok) {
           if (res.status === 403) {
               setLimitReached(true); // Trigger UI Banner
-              throw new Error("Monthly limit reached."); // Clean exit
+              throw new Error("Monthly limit reached."); // Clean exit for UI
           }
           if (res.status === 401) {
               localStorage.removeItem('token');
@@ -418,9 +421,14 @@ export default function Dashboard() {
     }
   };
 
-  // ============================================================================
+  const handleEnterpriseContact = () => {
+      // Placeholder for Enterprise contact logic
+      window.location.href = "mailto:sales@smartgeocode.io?subject=Enterprise%20Plan%20Inquiry";
+  };
+
+  // =========================================================================================
   // 7. RENDER (UI)
-  // ============================================================================
+  // =========================================================================================
 
   if (subscription === 'loading') {
     return (
@@ -595,35 +603,51 @@ export default function Dashboard() {
                         </button>
                     </form>
                     
-                    {/* NEW: UPSELL BANNER (Replaces Generic Error) */}
+                    {/* TIER-AWARE LIMIT BANNER (Replaces Generic Error) */}
                     {limitReached && (
                         <div className="mt-6 p-6 bg-red-50 rounded-2xl border-l-8 border-red-500 shadow-md animate-in slide-in-from-left-2">
                             <div className="flex justify-between items-start">
                                 <div>
                                     <h3 className="text-2xl font-bold text-red-800 mb-2">🚫 Monthly Limit Reached</h3>
-                                    <p className="text-red-700 mb-4 leading-relaxed">
-                                        You have hit the limit on the Free Plan. 
-                                        To continue processing this file and get more lookups, please upgrade to Pro.
-                                    </p>
-                                    <ul className="list-disc list-inside text-red-800 text-sm mb-6 space-y-1">
-                                        <li>Increase limit to 10,000 lookups</li>
-                                        <li>Priority Processing</li>
-                                        <li>Only <strong>$29/month</strong></li>
-                                    </ul>
+                                    
+                                    {subscription === 'free' ? (
+                                        <>
+                                            <p className="text-red-700 mb-4 leading-relaxed">
+                                                You have hit the limit on the Free Plan. 
+                                                Upgrade to Pro to process more addresses.
+                                            </p>
+                                            <ul className="list-disc list-inside text-red-800 text-sm mb-6 space-y-1">
+                                                <li>Increase limit to 10,000 lookups</li>
+                                                <li>Priority Processing</li>
+                                                <li>Only <strong>$29/month</strong></li>
+                                            </ul>
+                                            <button 
+                                                onClick={handleUpsell} 
+                                                className="w-full bg-red-600 text-white font-bold py-4 rounded-xl hover:bg-red-700 transition shadow-lg text-lg flex items-center justify-center gap-2"
+                                            >
+                                                Upgrade to Pro Now ⚡
+                                            </button>
+                                        </>
+                                    ) : (
+                                        <>
+                                            <p className="text-red-700 mb-4 leading-relaxed">
+                                                You have hit the 10,000 lookup limit on your Premium Plan.
+                                            </p>
+                                            <button 
+                                                onClick={handleEnterpriseContact} 
+                                                className="w-full bg-blue-700 text-white font-bold py-4 rounded-xl hover:bg-blue-800 transition shadow-lg text-lg flex items-center justify-center gap-2"
+                                            >
+                                                Contact Sales for Enterprise 🏢
+                                            </button>
+                                        </>
+                                    )}
                                 </div>
                                 <div className="text-4xl">🛑</div>
                             </div>
-                            
-                            <button 
-                                onClick={handleUpsell} 
-                                className="w-full bg-red-600 text-white font-bold py-4 rounded-xl hover:bg-red-700 transition shadow-lg text-lg flex items-center justify-center gap-2"
-                            >
-                                Upgrade to Pro Now ⚡
-                            </button>
                         </div>
                     )}
                     
-                    {/* Regular Error Message Display (Only if NOT limit reached) */}
+                    {/* Generic Error Message Display (Only if NOT limit reached) */}
                     {error && !limitReached && (
                         <div className="mt-6 p-4 bg-red-50 text-red-700 rounded-xl font-medium border border-red-200 flex items-start gap-3 shadow-sm">
                             <span className="text-xl">⚠️</span>

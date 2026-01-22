@@ -66,7 +66,7 @@ import com.stripe.exception.SignatureVerificationException;
 @CrossOrigin(origins = {"http://localhost:3000", "https://geocode-frontend.smartgeocode.io", "https://smartgeocode.io"}, allowCredentials = "true")
 public class GeocodeController {
 
-    // FIX: Force HTTP/1.1 to prevent "GOAWAY" errors from Nominatim servers
+    // FIX: Force HTTP/1.1 to prevent "GOAWAY" errors from Nominatim
     private final HttpClient client = HttpClient.newBuilder()
             .version(HttpClient.Version.HTTP_1_1)
             .build();
@@ -86,22 +86,23 @@ public class GeocodeController {
     private final BCryptPasswordEncoder encoder = new BCryptPasswordEncoder();
     private final String JWT_SECRET;
 
-    // === CRITICAL FIX: FORCE STABLE SECRET ===
-    // This prevents the "Auth Token Invalid" error on restarts
+    // === CRITICAL FIX: STABLE SECRET ===
+    // We use a hardcoded fallback if the ENV var is missing.
+    // This ensures tokens remain valid even if the server restarts.
     {
         String envSecret = System.getenv("JWT_SECRET");
         if (envSecret != null && envSecret.length() >= 32) {
             JWT_SECRET = envSecret;
             System.out.println("✅ Loaded JWT_SECRET from Environment.");
         } else {
-            // HARDCODED FALLBACK to ensure sessions persist across restarts
-            System.err.println("⚠️ JWT_SECRET missing or too short. Using STABLE fallback key.");
-            JWT_SECRET = "dev-secret-key-change-this-in-prod-must-be-very-long-string";
+            System.err.println("⚠️ JWT_SECRET missing. Using FIXED fallback to persist sessions.");
+            // This key never changes, so your browser token will stay valid across restarts.
+            JWT_SECRET = "super-secret-key-that-is-stable-across-restarts-for-smartgeocode-dev-2024";
         }
     }
 
     public GeocodeController() {
-        System.out.println("=== GeocodeController Live: Heavy-Duty Version Loaded (v3.0) ===");
+        System.out.println("=== GeocodeController Live: Heavy-Duty Version (v3.3) ===");
     }
 
     static {

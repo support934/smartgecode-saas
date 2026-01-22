@@ -66,7 +66,11 @@ import com.stripe.exception.SignatureVerificationException;
 @CrossOrigin(origins = {"http://localhost:3000", "https://geocode-frontend.smartgeocode.io", "https://smartgeocode.io"}, allowCredentials = "true")
 public class GeocodeController {
 
-    private final HttpClient client = HttpClient.newHttpClient();
+    // FIX: Force HTTP/1.1 to prevent "GOAWAY" errors from Nominatim servers
+    private final HttpClient client = HttpClient.newBuilder()
+            .version(HttpClient.Version.HTTP_1_1)
+            .build();
+            
     private final ObjectMapper mapper = new ObjectMapper();
     private final String SENDGRID_API_KEY = System.getenv("SENDGRID_API_KEY");
     
@@ -82,7 +86,8 @@ public class GeocodeController {
     private final BCryptPasswordEncoder encoder = new BCryptPasswordEncoder();
     private final String JWT_SECRET;
 
-    // Initialize JWT Secret from Env or Generate (CRITICAL: STABLE KEY)
+    // === CRITICAL FIX: FORCE STABLE SECRET ===
+    // This prevents the "Auth Token Invalid" error on restarts
     {
         String envSecret = System.getenv("JWT_SECRET");
         if (envSecret != null && envSecret.length() >= 32) {
@@ -96,7 +101,7 @@ public class GeocodeController {
     }
 
     public GeocodeController() {
-        System.out.println("=== GeocodeController Live: Heavy-Duty Version Loaded (v2.4) ===");
+        System.out.println("=== GeocodeController Live: Heavy-Duty Version Loaded (v3.0) ===");
     }
 
     static {

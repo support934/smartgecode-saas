@@ -8,9 +8,11 @@ import { loadStripe } from '@stripe/stripe-js';
 const stripePromise = loadStripe(process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY!);
 
 export default function Dashboard() {
-  // --- STATE MANAGEMENT ---
-  
-  // User & Subscription Status
+  // ==========================================
+  // 1. STATE MANAGEMENT
+  // ==========================================
+
+  // User Authentication & Subscription State
   const [subscription, setSubscription] = useState<'free' | 'premium' | 'loading'>('loading');
   const [email, setEmail] = useState<string>('');
   
@@ -20,7 +22,7 @@ export default function Dashboard() {
   const [loading, setLoading] = useState(false);
   const [currentBatch, setCurrentBatch] = useState<any>(null);
   
-  // UI State
+  // UI Interaction State
   const [error, setError] = useState('');
   const [showHelp, setShowHelp] = useState(false);
   const [activeTab, setActiveTab] = useState<'single' | 'batch'>('batch');
@@ -31,23 +33,26 @@ export default function Dashboard() {
   const [singleLoading, setSingleLoading] = useState(false);
   const lastAddressRef = useRef<string>('');
 
-  // Usage Stats State
+  // Usage Stats State (Credits)
   const [usage, setUsage] = useState({ used: 0, limit: 500 });
   const [usageLoading, setUsageLoading] = useState(true);
 
-  // --- POLLING STATE (FIX FOR INFINITE LOOP) ---
-  // Instead of storing the interval ID, we store the ID of the batch we are watching.
-  // The useEffect hook below handles the start/stop logic automatically.
+  // ==========================================
+  // 2. LIVE POLLING CONFIGURATION
+  // ==========================================
+  // We use 'pollingBatchId' to control the loop. If it's set, we poll. If null, we stop.
   const [pollingBatchId, setPollingBatchId] = useState<number | null>(null);
-  const emailRef = useRef(''); // Keeps track of email inside intervals
-  const notifiedRef = useRef<Set<number>>(new Set()); // Tracks batches we have already notified about
+  
+  // Refs to access latest state inside intervals without closures issues
+  const emailRef = useRef(''); 
+  const notifiedRef = useRef<Set<number>>(new Set()); // Tracks batches we have already toasted
 
-  // --- INITIALIZATION ---
+  // ==========================================
+  // 3. INITIALIZATION EFFECTS
+  // ==========================================
   useEffect(() => {
-    // Only run on client side
+    // Ensure we are running on the client
     if (typeof window !== 'undefined') {
-      
-      // 1. Get Credentials
       const storedEmail = (localStorage.getItem('email') || '').toLowerCase().trim();
       setEmail(storedEmail);
       emailRef.current = storedEmail; // Sync ref immediately
@@ -55,15 +60,16 @@ export default function Dashboard() {
       const token = localStorage.getItem('token'); 
 
       if (storedEmail) {
-        // 2. Fetch Subscription Status
+        // Fetch User Subscription Status
         fetch(`/api/me?email=${encodeURIComponent(storedEmail)}`)
           .then(res => {
-              if (!res.ok) throw new Error("Failed to fetch user");
+              if (!res.ok) throw new Error("Failed to fetch user details");
               return res.json();
           })
           .then(data => {
             const status = data.subscription_status || 'free';
             setSubscription(status);
+            // Load Batch History
             loadBatches(storedEmail);
           })
           .catch((err) => {
@@ -74,7 +80,7 @@ export default function Dashboard() {
         setSubscription('free');
       }
 
-      // 3. Fetch Usage Stats
+      // Fetch Usage Stats
       if (token) {
         fetchUsage(token);
       } else {
@@ -83,9 +89,88 @@ export default function Dashboard() {
     }
   }, []);
 
-  // --- HELPER: FETCH USAGE (With Cache Busting) ---
+  // ==========================================
+  // 4. THE ROBUST POLLING ENGINE
+  // ==========================================
+  useEffect(() => {
+    let intervalId: NodeJS.Timeout;
+
+    // Only start the interval if we have a valid Batch ID to watch
+    if (pollingBatchId !== null) {
+        console.log(`[Polling Engine] Starting watch for Batch #${pollingBatchId}`);
+        
+        intervalId = setInterval(async () => {
+            const currentEmail = emailRef.current || localStorage.getItem('email') || '';
+            const token = localStorage.getItem('token'); 
+
+            try {
+                // Poll the Batch Status Endpoint
+                const res = await fetch(`/api/batch/${pollingBatchId}?email=${encodeURIComponent(currentEmail)}`);
+                
+                if (!res.ok) {
+                    console.warn("Poll request failed", res.status);
+                    return;
+                }
+
+                const data = await res.json();
+                
+                // Update the UI with the latest progress
+                setCurrentBatch((prev: any) => ({
+                    ...prev,
+                    status: data.status,
+                    processedRows: data.processedRows,
+                    totalRows: data.totalRows,
+                    preview: data.preview || [] 
+                }));
+
+                // CRITICAL: Refresh Usage Counter Live on every tick
+                // This connects the backend increment to the frontend UI
+                if (token) {
+                    fetchUsage(token);
+                }
+
+                // Check for Stop Conditions (Complete or Failed)
+                if (data.status === 'complete' || data.status === 'failed') {
+                    console.log(`[Polling Engine] Batch ${pollingBatchId} finished. Stopping.`);
+                    
+                    // Stop the loop by clearing state
+                    setPollingBatchId(null); 
+                    
+                    // Refresh the history list
+                    loadBatches(currentEmail);
+
+                    // Notification Logic (Prevent Toast Spam)
+                    if (!notifiedRef.current.has(pollingBatchId)) {
+                        if (data.status === 'complete') {
+                            toast.success('Batch Processing Complete!');
+                        } else {
+                            toast.error('Batch Failed - Check file format.');
+                        }
+                        notifiedRef.current.add(pollingBatchId);
+                    }
+                }
+            } catch (e) { 
+                console.error("[Polling Engine] Network error tick:", e);
+            }
+        }, 2000); // Poll every 2 seconds
+    }
+
+    // Cleanup function: React runs this when component unmounts OR when pollingBatchId changes
+    return () => {
+        if (intervalId) {
+            console.log("[Polling Engine] Cleanup triggered. Clearing interval.");
+            clearInterval(intervalId);
+        }
+    };
+  }, [pollingBatchId]);
+
+  // ==========================================
+  // 5. HELPER FUNCTIONS & HANDLERS
+  // ==========================================
+
+  // Fetch Usage with Cache Busting
   const fetchUsage = (token: string) => {
-      // ?t=... forces the browser to ignore cache and get fresh DB values
+      // We append ?t=... to force the browser to ignore cache and get fresh DB values
       fetch(`/api/usage?t=${Date.now()}`, {
           headers: { 
             'Authorization': `Bearer ${token}`,
@@ -95,8 +180,8 @@ export default function Dashboard() {
       })
       .then(res => {
           if (res.status === 401) {
-              // Token is invalid (server restart?), stop polling to avoid spam
-              setPollingBatchId(null);
+              toast.error("Session expired. Please log in again.");
+              // Optional: Redirect to login
               return null;
           }
           if (!res.ok) throw new Error("Usage fetch failed");
@@ -104,7 +189,6 @@ export default function Dashboard() {
       })
       .then(data => {
           if (data) {
-              // Standardized keys from backend logic
               setUsage({ used: data.used || 0, limit: data.limit || 500 });
               setUsageLoading(false);
           }
@@ -115,60 +199,6 @@ export default function Dashboard() {
       });
   };
 
-  // --- THE POLLING EFFECT (Replaces startPolling function) ---
-  useEffect(() => {
-    let intervalId: NodeJS.Timeout;
-
-    if (pollingBatchId !== null) {
-        // Start the loop
-        console.log(`Starting poll for batch ${pollingBatchId}`);
-        
-        intervalId = setInterval(async () => {
-            const currentEmail = emailRef.current || localStorage.getItem('email') || '';
-            const token = localStorage.getItem('token'); 
-
-            try {
-                const res = await fetch(`/api/batch/${pollingBatchId}?email=${encodeURIComponent(currentEmail)}`);
-                const data = await res.json();
-
-                // 1. Update UI
-                setCurrentBatch((prev: any) => ({
-                    ...prev,
-                    status: data.status,
-                    processedRows: data.processedRows,
-                    totalRows: data.totalRows,
-                    preview: data.preview || []
-                }));
-
-                // 2. Refresh Usage Live
-                if (token) fetchUsage(token);
-
-                // 3. Stop Logic
-                if (data.status === 'complete' || data.status === 'failed') {
-                    // Stop polling by clearing the state
-                    setPollingBatchId(null); 
-                    loadBatches(currentEmail);
-
-                    // Notify only once
-                    if (!notifiedRef.current.has(pollingBatchId)) {
-                        if (data.status === 'complete') toast.success('Batch Processing Complete!');
-                        else toast.error('Batch Failed');
-                        notifiedRef.current.add(pollingBatchId);
-                    }
-                }
-            } catch (e) {
-                console.error("Poll tick failed", e);
-            }
-        }, 2000);
-    }
-
-    // Cleanup function: React runs this when component unmounts OR when pollingBatchId changes
-    return () => {
-        if (intervalId) clearInterval(intervalId);
-    };
-  }, [pollingBatchId]); // Dependency array ensures this runs only when ID changes
-
-  // --- ACTIONS ---
   const loadBatches = async (userEmail: string) => {
     try {
       const res = await fetch(`/api/batches?email=${encodeURIComponent(userEmail)}`);
@@ -214,7 +244,7 @@ export default function Dashboard() {
 
       if (!res.ok) {
         const errData = await res.json().catch(() => ({}));
-        // Specific Limit Error
+        // Specific Limit Error Handling
         if (res.status === 403) {
             throw new Error(errData.message || "Monthly limit reached. Please upgrade to continue.");
         }
@@ -223,7 +253,7 @@ export default function Dashboard() {
 
       const data = await res.json();
       if (data.status === 'success') {
-        // Init UI immediately
+        // Initialize the Batch UI immediately
         setCurrentBatch({
             batchId: data.batchId,
             status: 'processing',
@@ -235,7 +265,7 @@ export default function Dashboard() {
         loadBatches(email);
         toast.success('Batch started! Processing in background...');
         
-        // TRIGGER POLLING
+        // TRIGGER POLLING via State Change
         setPollingBatchId(data.batchId);
       } else {
         setError(data.message || 'Batch processing failed');
@@ -255,7 +285,7 @@ export default function Dashboard() {
   };
 
   const downloadSample = () => {
-    // Generates a sample CSV on the fly
+    // Generates a sample CSV on the fly with proper headers
     const csv = `address,landmark,city,state,country\n` +
                 `1600 Pennsylvania Ave NW,White House,Washington,DC,USA\n` +
                 `Empire State Building,,New York,NY,USA\n` +
@@ -273,7 +303,6 @@ export default function Dashboard() {
     setSingleLoading(true);
     const token = localStorage.getItem('token');
     
-    // Safety check for token
     const headers: HeadersInit = {};
     if (token) {
         headers['Authorization'] = `Bearer ${token}`;
@@ -284,7 +313,6 @@ export default function Dashboard() {
           headers: headers
       });
       
-      // Handle non-200 responses specifically
       if (!res.ok) {
           if (res.status === 403) throw new Error("Limit Reached: Please upgrade your plan.");
           if (res.status === 401) throw new Error("Unauthorized: Please log in again.");
@@ -335,7 +363,7 @@ export default function Dashboard() {
     } catch (error) { toast.error('Upgrade failed'); }
   };
 
-  // --- RENDER STATES ---
+  // --- RENDER LOADING STATE ---
   if (subscription === 'loading') {
     return (
       <div className="min-h-screen flex items-center justify-center">
@@ -347,11 +375,13 @@ export default function Dashboard() {
     );
   }
 
+  // --- RENDER MAIN DASHBOARD ---
   return (
     <div className="min-h-screen bg-gray-50">
       <Toaster position="top-right" />
 
       {/* DASHBOARD TOOLBAR */}
+      {/* Designed to sit below the Global Header without duplication */}
       <div className="bg-white border-b shadow-sm sticky top-0 z-40 px-6 py-4">
         <div className="max-w-7xl mx-auto flex flex-col md:flex-row items-center justify-between">
           <div className="flex items-center space-x-4 mb-3 md:mb-0">
@@ -493,6 +523,17 @@ export default function Dashboard() {
                         </div>
                     )}
 
+                    {/* SUCCESS BANNER (Shown when batch starts) */}
+                    {currentBatch && currentBatch.status === 'processing' && (
+                        <div className="bg-green-50 border border-green-200 rounded-lg p-4 mb-4 flex items-center gap-3 animate-in fade-in slide-in-from-top-2">
+                             <div className="bg-green-100 p-2 rounded-full text-green-600">🚀</div>
+                             <div>
+                                 <h4 className="font-bold text-green-900 text-sm">Batch #{currentBatch.batchId} Started</h4>
+                                 <p className="text-xs text-green-800">Your file is being processed in the background. You can close this window.</p>
+                             </div>
+                        </div>
+                    )}
+
                     {/* LIVE RESULTS TABLE */}
                     {currentBatch && (
                         <div className="bg-white p-6 rounded-2xl shadow border border-gray-100 mt-8 animate-in slide-in-from-bottom-4">
@@ -514,7 +555,7 @@ export default function Dashboard() {
                                             style={{ width: `${(currentBatch.processedRows / (currentBatch.totalRows || 1)) * 100}%` }}
                                         ></div>
                                     </div>
-                                    <p className="text-xs text-gray-400 mt-1 text-center animate-pulse">Do not close this window...</p>
+                                    <p className="text-xs text-gray-400 mt-1 text-center animate-pulse">Syncing with server...</p>
                                 </div>
                             )}
 
@@ -522,19 +563,19 @@ export default function Dashboard() {
                             {currentBatch.preview && currentBatch.preview.length > 0 ? (
                                 <div className="overflow-x-auto border rounded-lg max-h-80">
                                     <table className="w-full text-sm text-left">
-                                        <thead className="bg-gray-50 sticky top-0">
+                                        <thead className="bg-gray-50 sticky top-0 z-10">
                                             <tr>
-                                                <th className="p-3 font-semibold text-gray-700">Address</th>
-                                                <th className="p-3 font-semibold text-gray-700">Lat/Lng</th>
-                                                <th className="p-3 font-semibold text-gray-700">Status</th>
-                                                <th className="p-3 font-semibold text-gray-700">Map</th>
+                                                <th className="p-3 font-semibold text-gray-700 bg-gray-50 border-b">Address</th>
+                                                <th className="p-3 font-semibold text-gray-700 bg-gray-50 border-b">Lat/Lng</th>
+                                                <th className="p-3 font-semibold text-gray-700 bg-gray-50 border-b">Status</th>
+                                                <th className="p-3 font-semibold text-gray-700 bg-gray-50 border-b">Map</th>
                                             </tr>
                                         </thead>
                                         <tbody>
                                             {currentBatch.preview.map((row: any, i: number) => (
                                                 <tr key={i} className="border-b last:border-0 hover:bg-gray-50 transition-colors">
-                                                    <td className="p-3 truncate max-w-xs">{row.address}</td>
-                                                    <td className="p-3 font-mono text-xs">{row.lat ? `${row.lat}, ${row.lng}` : '-'}</td>
+                                                    <td className="p-3 truncate max-w-xs text-gray-700">{row.address}</td>
+                                                    <td className="p-3 font-mono text-xs text-gray-600">{row.lat ? `${row.lat}, ${row.lng}` : '-'}</td>
                                                     <td className="p-3 font-bold text-green-600">{row.status}</td>
                                                     {/* NEW: Map Pin Link */}
                                                     <td className="p-3">
@@ -543,7 +584,7 @@ export default function Dashboard() {
                                                                 href={`https://www.google.com/maps/search/?api=1&query=${row.lat},${row.lng}`} 
                                                                 target="_blank" 
                                                                 rel="noreferrer"
-                                                                className="text-xl hover:scale-110 block transition-transform"
+                                                                className="text-xl hover:scale-110 block transition-transform text-center"
                                                                 title="View on Google Maps"
                                                             >
                                                                 📍
@@ -556,7 +597,7 @@ export default function Dashboard() {
                                     </table>
                                 </div>
                             ) : (
-                                <div className="text-center py-4 text-gray-400 italic text-sm">
+                                <div className="text-center py-8 text-gray-400 italic text-sm bg-gray-50 rounded-lg border border-dashed border-gray-200">
                                     Waiting for first result...
                                 </div>
                             )}
@@ -580,10 +621,11 @@ export default function Dashboard() {
                 <div className="bg-blue-50 p-6 rounded-2xl border border-blue-100 shadow-sm">
                     <h4 className="font-bold text-blue-900 mb-2 flex items-center gap-2"><span>💡</span> Pro Tip</h4>
                     <p className="text-sm text-blue-800 leading-relaxed">
-                        Improve accuracy by adding extra columns to your CSV: <br/>
-                        <code className="bg-blue-100 px-1 rounded mx-1">landmark</code> 
-                        <code className="bg-blue-100 px-1 rounded mx-1">city</code> 
-                        <code className="bg-blue-100 px-1 rounded mx-1">country</code>
+                        For best results, ensure your CSV has these columns: <br/>
+                        <code className="bg-blue-100 px-1 rounded mx-1 text-blue-900 font-bold">address</code> (required)<br/>
+                        <code className="bg-blue-100 px-1 rounded mx-1 text-blue-900 font-bold">city</code> 
+                        <code className="bg-blue-100 px-1 rounded mx-1 text-blue-900 font-bold">state</code> 
+                        <code className="bg-blue-100 px-1 rounded mx-1 text-blue-900 font-bold">country</code>
                     </p>
                 </div>
 
@@ -598,16 +640,21 @@ export default function Dashboard() {
                         <div className="space-y-3">
                             {batches.map(b => (
                                 <div key={b.id} className="flex justify-between items-center p-3 bg-gray-50 rounded-lg hover:bg-gray-100 transition">
-                                    <div>
-                                        <p className="font-bold text-sm text-gray-800">Batch #{b.id}</p>
+                                    <div className="flex-1">
+                                        <div className="flex items-center gap-2">
+                                            <p className="font-bold text-sm text-gray-800">Batch #{b.id}</p>
+                                            {b.status === 'processing' && <span className="w-2 h-2 rounded-full bg-blue-500 animate-pulse"></span>}
+                                        </div>
                                         <p className="text-xs text-gray-500">{new Date(b.created_at).toLocaleDateString()}</p>
                                     </div>
-                                    <button 
-                                        onClick={() => downloadBatch(b.id)} 
-                                        className="text-red-600 text-xs font-bold border border-red-200 px-3 py-1 rounded hover:bg-red-50 transition"
-                                    >
-                                        Download
-                                    </button>
+                                    <div className="flex gap-2">
+                                        <button 
+                                            onClick={() => downloadBatch(b.id)} 
+                                            className="text-red-600 text-xs font-bold border border-red-200 px-3 py-1 rounded hover:bg-red-50 transition"
+                                        >
+                                            Download
+                                        </button>
+                                    </div>
                                 </div>
                             ))}
                         </div>
@@ -648,15 +695,15 @@ export default function Dashboard() {
                             <div className="grid grid-cols-2 gap-4 text-sm text-gray-700">
                                 <div>
                                     <p className="font-bold text-gray-900">Latitude</p>
-                                    <p className="font-mono">{singleResults.lat}</p>
+                                    <p className="font-mono text-gray-600">{singleResults.lat}</p>
                                 </div>
                                 <div>
                                     <p className="font-bold text-gray-900">Longitude</p>
-                                    <p className="font-mono">{singleResults.lng}</p>
+                                    <p className="font-mono text-gray-600">{singleResults.lng}</p>
                                 </div>
-                                <div className="col-span-2">
+                                <div className="col-span-2 border-t pt-2 mt-2">
                                     <p className="font-bold text-gray-900">Formatted Address</p>
-                                    <p>{singleResults.formatted_address}</p>
+                                    <p className="text-gray-600">{singleResults.formatted_address}</p>
                                 </div>
                             </div>
                         </div>
@@ -703,16 +750,17 @@ export default function Dashboard() {
                     <p className="text-gray-600 mb-4">Upload a standard CSV file with headers. The more details, the better the accuracy.</p>
                     
                     <div className="bg-gray-800 text-gray-100 p-4 rounded-lg font-mono text-xs overflow-x-auto mb-6 shadow-inner">
-                        <code>
-                            address,landmark,city,country<br/>
-                            1600 Penn Ave,White House,Washington,USA<br/>
-                            ,,Tokyo Tower,Japan
-                        </code>
+                        <code className="block mb-2 text-green-400"># Recommended Structure</code>
+                        <div className="whitespace-pre">
+                            address,city,state,country,landmark<br/>
+                            "1600 Penn Ave",Washington,DC,USA,"White House"<br/>
+                            ,Tokyo,,Japan,"Tokyo Tower"
+                        </div>
                     </div>
                     
                     <button 
                         onClick={() => setShowHelp(false)} 
-                        className="w-full bg-red-600 text-white py-3 rounded-xl font-bold hover:bg-red-700 transition shadow-md"
+                        className="w-full bg-red-600 text-white py-3 rounded-xl font-bold hover:bg-red-700 transition shadow-md mt-4"
                     >
                         Got it, thanks!
                     </button>

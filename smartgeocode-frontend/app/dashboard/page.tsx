@@ -5,8 +5,9 @@ import toast, { Toaster } from 'react-hot-toast';
 import { loadStripe } from '@stripe/stripe-js';
 
 // =========================================================================================
-// CONFIGURATION
+// CONFIGURATION & SETUP
 // =========================================================================================
+
 // Load Stripe promise (ensure your ENV variable is set correctly in .env.local)
 const stripePromise = loadStripe(process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY!);
 
@@ -43,9 +44,11 @@ export default function Dashboard() {
 
   // --- UI Toggles & Errors ---
   const [error, setError] = useState('');
+  
   // CRITICAL: New state to track if we hit the 403 limit. 
   // If true, we hide generic errors and show the Upsell Banner.
   const [limitReached, setLimitReached] = useState(false); 
+  
   const [showHelp, setShowHelp] = useState(false);
   const [activeTab, setActiveTab] = useState<'single' | 'batch'>('batch');
 
@@ -636,7 +639,7 @@ export default function Dashboard() {
                             disabled={loading}
                             className="w-full bg-red-600 text-white py-4 rounded-xl font-bold text-lg hover:bg-red-700 disabled:opacity-50 shadow-md transition transform hover:-translate-y-0.5 active:translate-y-0"
                         >
-                            {loading ? 'Processing...' : 'Start Batch Process'}
+                            {loading ? 'Starting Process...' : 'Start Batch Process'}
                         </button>
                     </form>
                     
@@ -660,7 +663,7 @@ export default function Dashboard() {
                                             </ul>
                                             <button 
                                                 onClick={handleUpsell} 
-                                                className="w-full bg-red-600 text-white font-bold py-4 rounded-xl hover:bg-red-700 transition shadow-lg text-lg flex items-center justify-center gap-2"
+                                                className="w-full bg-red-600 text-white font-bold py-4 rounded-xl hover:bg-red-700 transition shadow-lg text-lg flex items-center justify-center gap-2 mt-4"
                                             >
                                                 Upgrade to Pro Now ⚡
                                             </button>
@@ -672,7 +675,7 @@ export default function Dashboard() {
                                             </p>
                                             <button 
                                                 onClick={handleEnterpriseContact} 
-                                                className="w-full bg-blue-700 text-white font-bold py-4 rounded-xl hover:bg-blue-800 transition shadow-lg text-lg flex items-center justify-center gap-2"
+                                                className="w-full bg-blue-700 text-white font-bold py-4 rounded-xl hover:bg-blue-800 transition shadow-lg text-lg flex items-center justify-center gap-2 mt-4"
                                             >
                                                 Contact Sales for Enterprise 🏢
                                             </button>
@@ -830,7 +833,7 @@ export default function Dashboard() {
                     ) : (
                         <div className="space-y-3">
                             {batches.map(b => (
-                                <div key={b.id} className="flex justify-between items-center p-4 bg-gray-50 rounded-xl border border-gray-100 hover:bg-gray-100 hover:border-gray-300 transition-all duration-200">
+                                <div key={b.id} className="flex justify-between items-center p-4 hover:bg-gray-50 rounded-xl border-b border-gray-100 last:border-0 transition-all duration-200">
                                     <div className="flex-1">
                                         <div className="flex items-center gap-2">
                                             <p className="font-bold text-sm text-gray-800">Batch #{b.id}</p>

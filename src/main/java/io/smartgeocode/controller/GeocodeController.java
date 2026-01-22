@@ -1,7 +1,20 @@
 package io.smartgeocode.controller;
 
+// ============================================================================
+// IMPORTS - CORE
+// ============================================================================
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.servlet.view.RedirectView;
+import org.springframework.web.multipart.MultipartFile;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.http.ResponseEntity;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.MediaType;
+import org.springframework.http.HttpStatus;
+
+// ============================================================================
+// IMPORTS - UTILITIES & JAVA
+// ============================================================================
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
@@ -15,31 +28,40 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.Arrays;
 import java.util.Collections;
-import org.springframework.web.multipart.MultipartFile;
-import org.springframework.beans.factory.annotation.Autowired;
+import java.util.Date;
+import java.util.concurrent.CompletableFuture; 
+import java.util.Base64;
+import java.util.Random;
+import java.util.UUID;
+import java.nio.charset.StandardCharsets;
+import jakarta.annotation.PostConstruct;
+import java.io.InputStreamReader;
+
+// ============================================================================
+// IMPORTS - DATABASE
+// ============================================================================
 import javax.sql.DataSource;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.Statement;
-import java.util.Date;
-import java.util.concurrent.CompletableFuture; 
+
+// ============================================================================
+// IMPORTS - SECURITY
+// ============================================================================
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import io.jsonwebtoken.Jwts;
 import io.jsonwebtoken.SignatureAlgorithm;
 import io.jsonwebtoken.Claims;
 import io.jsonwebtoken.security.Keys;
-import java.util.Base64;
 import javax.crypto.SecretKey;
+
+// ============================================================================
+// IMPORTS - EXTERNAL LIBRARIES (CSV, EMAIL, STRIPE)
+// ============================================================================
 import com.opencsv.CSVReader;
-import java.io.InputStreamReader;
-import java.util.Random;
-import java.util.UUID;
-import java.nio.charset.StandardCharsets;
-import jakarta.annotation.PostConstruct;
 import io.smartgeocode.service.LookupService;
 
-// Email Imports
 import com.sendgrid.SendGrid;
 import com.sendgrid.Method;
 import com.sendgrid.helpers.mail.Mail;
@@ -48,12 +70,6 @@ import com.sendgrid.helpers.mail.objects.Content;
 import com.sendgrid.Request;
 import com.sendgrid.Response;
 
-// Spring Response Imports
-import org.springframework.http.ResponseEntity;
-import org.springframework.http.HttpHeaders;
-import org.springframework.http.MediaType;
-
-// Stripe Imports
 import com.stripe.Stripe;
 import com.stripe.exception.StripeException;
 import com.stripe.model.Event;
@@ -66,7 +82,11 @@ import com.stripe.exception.SignatureVerificationException;
 @CrossOrigin(origins = {"http://localhost:3000", "https://geocode-frontend.smartgeocode.io", "https://smartgeocode.io"}, allowCredentials = "true")
 public class GeocodeController {
 
-    // FIX: Force HTTP/1.1 to prevent "GOAWAY" errors from Nominatim
+    // ========================================================================
+    // 1. CLASS CONFIGURATION & CONSTANTS
+    // ========================================================================
+    
+    // HTTP/1.1 Fix: Prevents "GOAWAY" errors from older servers (Nominatim)
     private final HttpClient client = HttpClient.newBuilder()
             .version(HttpClient.Version.HTTP_1_1)
             .build();
@@ -74,7 +94,7 @@ public class GeocodeController {
     private final ObjectMapper mapper = new ObjectMapper();
     private final String SENDGRID_API_KEY = System.getenv("SENDGRID_API_KEY");
     
-    // DELAY: 1.1s is the "Golden Rule" for Nominatim to avoid bans. Do not lower this.
+    // Rate Limiting: 1.1s absolute minimum for Nominatim compliance
     private final int API_DELAY_MS = 1100; 
 
     @Autowired
@@ -86,23 +106,22 @@ public class GeocodeController {
     private final BCryptPasswordEncoder encoder = new BCryptPasswordEncoder();
     private final String JWT_SECRET;
 
-    // === CRITICAL FIX: STABLE SECRET ===
-    // We use a hardcoded fallback if the ENV var is missing.
-    // This ensures tokens remain valid even if the server restarts.
+    // === CRITICAL AUTH FIX: STABLE JWT SECRET ===
+    // Prevents "Auth Token Invalid" errors when the server restarts.
     {
         String envSecret = System.getenv("JWT_SECRET");
         if (envSecret != null && envSecret.length() >= 32) {
             JWT_SECRET = envSecret;
-            System.out.println("✅ Loaded JWT_SECRET from Environment.");
+            System.out.println("✅ Loaded JWT_SECRET from Environment Variables.");
         } else {
-            System.err.println("⚠️ JWT_SECRET missing. Using FIXED fallback to persist sessions.");
-            // This key never changes, so your browser token will stay valid across restarts.
-            JWT_SECRET = "super-secret-key-that-is-stable-across-restarts-for-smartgeocode-dev-2024";
+            System.err.println("⚠️ WARNING: JWT_SECRET missing or too short. Using STABLE fallback key for persistence.");
+            // This key allows existing browser tokens to remain valid after a restart/re-deploy.
+            JWT_SECRET = "dev-secret-key-change-this-in-prod-must-be-very-long-string-to-be-secure";
         }
     }
 
     public GeocodeController() {
-        System.out.println("=== GeocodeController Live: Heavy-Duty Version (v3.3) ===");
+        System.out.println("=== GeocodeController Live: Heavy-Duty Version Loaded (v4.0) ===");
     }
 
     static {
@@ -111,12 +130,15 @@ public class GeocodeController {
         }
     }
 
+    // ========================================================================
+    // 2. DATABASE INITIALIZATION
+    // ========================================================================
     @PostConstruct
     public void initDatabase() {
         try (Connection conn = dataSource.getConnection()) {
             System.out.println("Checking DB Schema...");
             
-            // User Table
+            // Users Table
             String sqlUsers = "CREATE TABLE IF NOT EXISTS users (" +
                               "id SERIAL PRIMARY KEY, " +
                               "email VARCHAR(255) UNIQUE NOT NULL, " +
@@ -126,7 +148,7 @@ public class GeocodeController {
                               "stripe_customer_id VARCHAR(255))";
             conn.prepareStatement(sqlUsers).execute();
 
-            // Batches Table - 'results' column is TEXT to hold the CSV content
+            // Batches Table - 'results' is TEXT to hold full CSV output
             String sqlBatches = "CREATE TABLE IF NOT EXISTS batches (" +
                                 "id SERIAL PRIMARY KEY, " +
                                 "user_id INTEGER REFERENCES users(id), " +
@@ -137,18 +159,20 @@ public class GeocodeController {
                                 "processed_rows INTEGER DEFAULT 0)";
             conn.prepareStatement(sqlBatches).execute();
             
-            System.out.println("DB Schema Verified: Users and Batches tables ready.");
+            System.out.println("DB Schema Verified: Tables ready.");
         } catch (Exception e) {
             System.err.println("DB Init Failed: " + e.getMessage());
             e.printStackTrace();
         }
     }
 
+    // ========================================================================
+    // 3. AUTHENTICATION HELPER
+    // ========================================================================
     private Long extractUserId(String authHeader) {
         if (authHeader == null || !authHeader.startsWith("Bearer ")) return 0L;
         try {
             String token = authHeader.substring(7);
-            // Handle frontend possibly sending "Bearer null" string
             if ("null".equals(token) || "undefined".equals(token) || token.isEmpty()) return 0L;
             
             Claims claims = Jwts.parserBuilder()
@@ -163,29 +187,43 @@ public class GeocodeController {
         }
     }
 
-    // === 1. SINGLE LOOKUP ===
+    // ========================================================================
+    // 4. API ENDPOINT: SINGLE GEOCODE
+    // ========================================================================
     @GetMapping("/geocode")
     public ResponseEntity<Map<String, Object>> geocode(@RequestParam("address") String addr, @RequestHeader(value = "Authorization", required = false) String authHeader) {
+        // Validation
         if (addr == null || addr.isEmpty()) {
             return ResponseEntity.badRequest().body(Map.of("status", "error", "message", "Missing address parameter"));
         }
 
+        // Auth Check
         Long userId = extractUserId(authHeader);
+        // If token is invalid (0L), returning 401 forces frontend to logout/refresh
+        if (userId == 0L) {
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(Map.of("status", "error", "message", "Invalid Token"));
+        }
+
         System.out.println("Single Lookup Request. User: " + userId + " Addr: " + addr);
 
+        // Limit Check
         if (!lookupService.canPerformLookup(userId, 1)) {
             return ResponseEntity.status(403).body(Map.of("status", "error", "message", "Monthly limit reached. Upgrade to Premium."));
         }
 
+        // Perform Search
         Map<String, Object> result = performGeocodeRequest(addr);
         
+        // Update Usage
         if ("success".equals(result.get("status"))) {
             lookupService.incrementLookup(userId, 1);
         }
         return ResponseEntity.ok(result);
     }
 
-    // === 2. BATCH GEOCODE (THE HEAVY LIFTER) ===
+    // ========================================================================
+    // 5. API ENDPOINT: BATCH GEOCODE (THE HEAVY LIFTER)
+    // ========================================================================
     @PostMapping(value = "/batch-geocode", consumes = "multipart/form-data")
     public ResponseEntity<Map<String, Object>> batchGeocode(@RequestParam("file") MultipartFile file, @RequestParam("email") String email, @RequestHeader(value = "Authorization", required = false) String authHeader) {
         
@@ -257,8 +295,9 @@ public class GeocodeController {
         }
     }
 
-    // === 3. THE "IRON CLAD" LOGIC ENGINE ===
-    // This is the updated logic block that restores the 100% success rate
+    // ========================================================================
+    // 6. THE "IRON CLAD" LOGIC ENGINE (Waterfall Strategy)
+    // ========================================================================
     private void processBatchLogic(int batchId, Long userId, List<String[]> rows, String email) {
         StringBuilder csvOutput = new StringBuilder();
         // Add headers for result CSV
@@ -650,13 +689,19 @@ public class GeocodeController {
         return Jwts.builder().setSubject(email).claim("userId", userId).setIssuedAt(new Date()).setExpiration(new Date(System.currentTimeMillis() + 604800000)).signWith(SignatureAlgorithm.HS256, JWT_SECRET).compact();
     }
     
-    // Updated Usage Endpoint with Cache Busting Headers
+    // CRITICAL FIX: USAGE ENDPOINT
+    // If token is invalid (0L), return 401 Unauthorized so frontend can logout.
     @GetMapping("/usage")
     public ResponseEntity<Map<String, Object>> getUsage(@RequestHeader(value = "Authorization", required = false) String authHeader) {
         Long userId = extractUserId(authHeader);
+        
+        if (userId == 0L) {
+            // This is the signal for the frontend to clear the token
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(Map.of("error", "Invalid Token"));
+        }
+        
         Map<String, Integer> usageData = lookupService.getUsage(userId);
         
-        // Ensure standardization for frontend (explicit keys)
         Map<String, Object> response = new HashMap<>();
         response.put("used", usageData.getOrDefault("used", 0));
         response.put("limit", usageData.getOrDefault("limit", 500));

@@ -4,29 +4,31 @@ import { useState, useEffect, useRef } from 'react';
 import toast, { Toaster } from 'react-hot-toast';
 import { loadStripe } from '@stripe/stripe-js';
 
-// ============================================================================
+// =========================================================================================
 // CONFIGURATION
-// ============================================================================
+// =========================================================================================
 // Load Stripe promise (ensure your ENV variable is set correctly in .env.local)
 const stripePromise = loadStripe(process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY!);
 
 export default function Dashboard() {
-  // ============================================================================
+  // =========================================================================================
   // 1. STATE MANAGEMENT
-  // ============================================================================
+  // =========================================================================================
 
   // --- User Identity & Subscription Status ---
+  // Tracks if the user is on Free, Premium, or if we are still loading their state.
   const [subscription, setSubscription] = useState<'free' | 'premium' | 'loading'>('loading');
   const [email, setEmail] = useState<string>('');
   
   // --- Batch Processing Data ---
+  // Stores the list of past batches and the current active batch details
   const [batches, setBatches] = useState<any[]>([]);
   const [currentBatch, setCurrentBatch] = useState<any>(null);
   
   // --- File Upload State ---
   const [file, setFile] = useState<File | null>(null);
   const [loading, setLoading] = useState(false);
-  const [isDragOver, setIsDragOver] = useState(false); // Visual drag state
+  const [isDragOver, setIsDragOver] = useState(false); // Visual drag state for UX
   
   // --- Single Lookup State ---
   const [address, setAddress] = useState('');
@@ -35,30 +37,33 @@ export default function Dashboard() {
   const lastAddressRef = useRef<string>('');
 
   // --- Usage & Credit System ---
+  // Controls the progress bar in the header
   const [usage, setUsage] = useState({ used: 0, limit: 500 });
   const [usageLoading, setUsageLoading] = useState(true);
 
   // --- UI Toggles & Errors ---
   const [error, setError] = useState('');
-  // CRITICAL: New state to track if we hit the 403 limit
+  // CRITICAL: New state to track if we hit the 403 limit. 
+  // If true, we hide generic errors and show the Upsell Banner.
   const [limitReached, setLimitReached] = useState(false); 
   const [showHelp, setShowHelp] = useState(false);
   const [activeTab, setActiveTab] = useState<'single' | 'batch'>('batch');
 
-  // ============================================================================
-  // 2. ROBUST POLLING STATE
-  // ============================================================================
+  // =========================================================================================
+  // 2. ROBUST POLLING STATE (THE FIX)
+  // =========================================================================================
   // We track the *ID* of the batch we are currently polling. 
   // If this is null, polling is OFF. If it is a number, polling is ON.
+  // This state drives the useEffect hook below.
   const [pollingBatchId, setPollingBatchId] = useState<number | null>(null);
   
   // Refs are used to access the latest state inside intervals/timeouts without closure staleness
   const emailRef = useRef(''); 
   const notifiedRef = useRef<Set<number>>(new Set()); // Prevents duplicate "Success" toasts
 
-  // ============================================================================
+  // =========================================================================================
   // 3. INITIALIZATION & AUTH CHECK
-  // ============================================================================
+  // =========================================================================================
   useEffect(() => {
     // Ensure code only runs on the client-side
     if (typeof window !== 'undefined') {
@@ -70,6 +75,7 @@ export default function Dashboard() {
 
       if (storedEmail) {
         // 1. Fetch Subscription Status
+        console.log("Fetching user subscription status...");
         fetch(`/api/me?email=${encodeURIComponent(storedEmail)}`)
           .then(res => {
               if (!res.ok) throw new Error("Failed to fetch user details");
@@ -99,9 +105,9 @@ export default function Dashboard() {
     }
   }, []);
 
-  // ============================================================================
+  // =========================================================================================
   // 4. USAGE DATA FETCHER (With Cache Busting & 401 Protection)
-  // ============================================================================
+  // =========================================================================================
   const fetchUsage = (token: string) => {
       // Append timestamp (?t=) to force browser to skip cache and get fresh DB values
       fetch(`/api/usage?t=${Date.now()}`, {
@@ -139,9 +145,11 @@ export default function Dashboard() {
       });
   };
 
-  // ============================================================================
+  // =========================================================================================
   // 5. THE POLLING ENGINE (useEffect Implementation)
-  // ============================================================================
+  // =========================================================================================
+  // This replaces the old startPolling/stopPolling functions. 
+  // It automatically starts when `pollingBatchId` is set, and CLEANLY stops when it is null.
   useEffect(() => {
     let intervalId: NodeJS.Timeout;
 
@@ -221,9 +229,9 @@ export default function Dashboard() {
     };
   }, [pollingBatchId]);
 
-  // ============================================================================
-  // 6. ACTION HANDLERS
-  // ============================================================================
+  // =========================================================================================
+  // 6. ACTION HANDLERS & UPLOAD LOGIC
+  // =========================================================================================
 
   const loadBatches = async (userEmail: string) => {
     try {
@@ -276,21 +284,19 @@ export default function Dashboard() {
         body: formData,
       });
 
-      // Handle Errors
+      // --- CRITICAL FIX: TRAP 403 BEFORE PARSING ---
+      // If the backend says "403 Forbidden", it means limit hit.
+      // We set the `limitReached` state to true, which triggers the specialized Banner.
+      if (res.status === 403) {
+          console.log("Limit Hit (403) Detected - Triggering Banner");
+          setLimitReached(true);
+          setLoading(false);
+          return; // STOP HERE. Do not throw error.
+      }
+
+      // Handle other Errors
       if (!res.ok) {
         const errData = await res.json().catch(() => ({}));
-        
-        // --- CRITICAL FIX: UPSELL TRIGGER (403 TRAP) ---
-        // If the backend says "403 Forbidden", it means limit hit.
-        // We set the `limitReached` state to true, which triggers the specialized Banner.
-        if (res.status === 403) {
-            setLimitReached(true); 
-            setLoading(false);
-            // Do not throw generic error; return early so Banner shows
-            return;
-        }
-        
-        // For standard errors (500, 400), throw normally
         throw new Error(errData.message || `Upload failed with status: ${res.status}`);
       }
 
@@ -316,6 +322,7 @@ export default function Dashboard() {
         toast.error('Batch failed to start');
       }
     } catch (err: unknown) {
+      // This block runs ONLY for non-403 errors now
       const errorMessage = err instanceof Error ? err.message : 'Unknown error';
       setError(errorMessage);
       toast.error(errorMessage);
@@ -365,7 +372,7 @@ export default function Dashboard() {
           headers: headers
       });
       
-      // Detailed Error Handling
+      // Detailed Error Handling with 403 Trap
       if (!res.ok) {
           if (res.status === 403) {
               setLimitReached(true); // Trigger UI Banner
@@ -400,6 +407,7 @@ export default function Dashboard() {
         toast.error(data.message || 'Geocode failed - No result found.');
       }
     } catch (error: any) {
+      // Don't show toast for limit reached, let the Banner handle it
       if (error.message !== "Monthly limit reached.") {
           toast.error(error.message || 'Connection error. Please try again.');
       }
@@ -449,10 +457,9 @@ export default function Dashboard() {
       }
   };
 
-
-  // ============================================================================
+  // =========================================================================================
   // 7. RENDER (UI)
-  // ============================================================================
+  // =========================================================================================
 
   if (subscription === 'loading') {
     return (
@@ -626,10 +633,10 @@ export default function Dashboard() {
                         </div>
                         <button 
                             type="submit" 
-                            disabled={loading || !file}
+                            disabled={loading}
                             className="w-full bg-red-600 text-white py-4 rounded-xl font-bold text-lg hover:bg-red-700 disabled:opacity-50 shadow-md transition transform hover:-translate-y-0.5 active:translate-y-0"
                         >
-                            {loading ? 'Starting Process...' : 'Start Batch Process'}
+                            {loading ? 'Processing...' : 'Start Batch Process'}
                         </button>
                     </form>
                     
@@ -653,7 +660,7 @@ export default function Dashboard() {
                                             </ul>
                                             <button 
                                                 onClick={handleUpsell} 
-                                                className="w-full bg-red-600 text-white font-bold py-4 rounded-xl hover:bg-red-700 transition shadow-lg text-lg flex items-center justify-center gap-2 mt-4"
+                                                className="w-full bg-red-600 text-white font-bold py-4 rounded-xl hover:bg-red-700 transition shadow-lg text-lg flex items-center justify-center gap-2"
                                             >
                                                 Upgrade to Pro Now ⚡
                                             </button>
@@ -665,7 +672,7 @@ export default function Dashboard() {
                                             </p>
                                             <button 
                                                 onClick={handleEnterpriseContact} 
-                                                className="w-full bg-blue-700 text-white font-bold py-4 rounded-xl hover:bg-blue-800 transition shadow-lg text-lg flex items-center justify-center gap-2 mt-4"
+                                                className="w-full bg-blue-700 text-white font-bold py-4 rounded-xl hover:bg-blue-800 transition shadow-lg text-lg flex items-center justify-center gap-2"
                                             >
                                                 Contact Sales for Enterprise 🏢
                                             </button>

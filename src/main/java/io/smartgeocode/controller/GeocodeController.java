@@ -1,3 +1,4 @@
+
 package io.smartgeocode.controller;
 
 import org.springframework.web.bind.annotation.*;
@@ -82,19 +83,22 @@ public class GeocodeController {
     private final BCryptPasswordEncoder encoder = new BCryptPasswordEncoder();
     private final String JWT_SECRET;
 
-    // Initialize JWT Secret from Env or Generate
+    // === CRITICAL FIX: FORCE STABLE SECRET ===
+    // This prevents the "Auth Token Invalid" error on restarts
     {
         String envSecret = System.getenv("JWT_SECRET");
         if (envSecret != null && envSecret.length() >= 32) {
             JWT_SECRET = envSecret;
+            System.out.println("✅ Loaded JWT_SECRET from Environment.");
         } else {
-            SecretKey key = Keys.secretKeyFor(SignatureAlgorithm.HS256);
-            JWT_SECRET = Base64.getEncoder().encodeToString(key.getEncoded());
+            // HARDCODED FALLBACK to ensure sessions persist across restarts
+            System.err.println("⚠️ JWT_SECRET missing or too short. Using STABLE fallback key.");
+            JWT_SECRET = "dev-secret-key-change-this-in-prod-must-be-very-long-string";
         }
     }
 
     public GeocodeController() {
-        System.out.println("=== GeocodeController Live: Heavy-Duty Version Loaded (v2.3 - Compilation Fixed) ===");
+        System.out.println("=== GeocodeController Live: v3.1 (Stable Auth) ===");
     }
 
     static {
@@ -156,7 +160,6 @@ public class GeocodeController {
     }
 
     // === 1. SINGLE LOOKUP ===
-    // FIX: Return type changed to ResponseEntity to match return statements
     @GetMapping("/geocode")
     public ResponseEntity<Map<String, Object>> geocode(@RequestParam("address") String addr, @RequestHeader(value = "Authorization", required = false) String authHeader) {
         if (addr == null || addr.isEmpty()) {

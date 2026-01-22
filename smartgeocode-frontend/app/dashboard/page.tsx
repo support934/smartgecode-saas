@@ -4,7 +4,7 @@ import { useState, useEffect, useRef } from 'react';
 import toast, { Toaster } from 'react-hot-toast';
 import { loadStripe } from '@stripe/stripe-js';
 
-// Load Stripe promise (ensure your ENV variable is set correctly in .env.local)
+// Load Stripe promise (ensure your ENV variable is set)
 const stripePromise = loadStripe(process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY!);
 
 export default function Dashboard() {
@@ -23,7 +23,6 @@ export default function Dashboard() {
   // File Upload State
   const [file, setFile] = useState<File | null>(null);
   const [loading, setLoading] = useState(false);
-  const [uploadProgress, setUploadProgress] = useState(0); // For future visual polish
   
   // Single Lookup State
   const [address, setAddress] = useState('');
@@ -107,7 +106,7 @@ export default function Dashboard() {
           },
       })
       .then(res => {
-          // SAFETY VALVE: If token is invalid, log out user to prevent "Stuck" state
+          // SAFETY VALVE: If token is invalid (Backend restarted?), log out user
           if (res.status === 401) {
               console.warn("Session expired (401). Redirecting to login...");
               toast.error("Session expired. Please log in again.");
@@ -142,25 +141,34 @@ export default function Dashboard() {
   useEffect(() => {
     let intervalId: NodeJS.Timeout;
 
+    // Only start the interval if we have a valid Batch ID to watch
     if (pollingBatchId !== null) {
-        console.log(`[Polling Engine] Starting poll for Batch #${pollingBatchId}`);
+        console.log(`[Polling Engine] Starting watch for Batch #${pollingBatchId}`);
         
         intervalId = setInterval(async () => {
             const currentEmail = emailRef.current || localStorage.getItem('email') || '';
             const token = localStorage.getItem('token'); 
 
             try {
-                // Poll Batch Status
+                // Poll the Batch Status Endpoint
                 const res = await fetch(`/api/batch/${pollingBatchId}?email=${encodeURIComponent(currentEmail)}`);
                 
+                // Handle session expiry during polling
+                if (res.status === 401) {
+                    setPollingBatchId(null);
+                    localStorage.clear();
+                    window.location.href = '/login';
+                    return;
+                }
+                
                 if (!res.ok) {
-                    console.warn(`[Polling Engine] Poll failed: ${res.status}`);
+                    console.warn("Poll request failed", res.status);
                     return;
                 }
 
                 const data = await res.json();
                 
-                // UPDATE UI: Sync local state with server progress
+                // Update the UI with the latest progress
                 setCurrentBatch((prev: any) => ({
                     ...prev,
                     status: data.status,
@@ -169,41 +177,42 @@ export default function Dashboard() {
                     preview: data.preview || [] 
                 }));
 
-                // UPDATE USAGE: Fetch fresh counter from DB
+                // CRITICAL: Refresh Usage Counter Live on every tick
+                // This connects the backend increment to the frontend UI
                 if (token) {
                     fetchUsage(token);
                 }
 
-                // STOP CONDITION: Is the batch done?
+                // Check for Stop Conditions (Complete or Failed)
                 if (data.status === 'complete' || data.status === 'failed') {
-                    console.log(`[Polling Engine] Batch ${pollingBatchId} finished. Stopping Loop.`);
+                    console.log(`[Polling Engine] Batch ${pollingBatchId} finished. Stopping.`);
                     
-                    // 1. Kill the loop state
+                    // Stop the loop by clearing state
                     setPollingBatchId(null); 
                     
-                    // 2. Refresh History List
+                    // Refresh the history list
                     loadBatches(currentEmail);
 
-                    // 3. Notify User (Once only)
+                    // Notification Logic (Prevent Toast Spam)
                     if (!notifiedRef.current.has(pollingBatchId)) {
                         if (data.status === 'complete') {
                             toast.success('Batch Processing Complete!');
                         } else {
-                            toast.error('Batch Failed - Please check file format.');
+                            toast.error('Batch Failed - Check file format.');
                         }
                         notifiedRef.current.add(pollingBatchId);
                     }
                 }
-            } catch (e) {
+            } catch (e) { 
                 console.error("[Polling Engine] Network tick error:", e);
             }
-        }, 2000); // Poll frequency: 2 seconds
+        }, 2000); // Poll every 2 seconds
     }
 
-    // Cleanup: React runs this when component unmounts OR pollingBatchId changes
+    // Cleanup function: React runs this when component unmounts OR when pollingBatchId changes
     return () => {
         if (intervalId) {
-            console.log("[Polling Engine] Cleaning up interval.");
+            console.log("[Polling Engine] Cleanup triggered. Clearing interval.");
             clearInterval(intervalId);
         }
     };
@@ -308,7 +317,7 @@ export default function Dashboard() {
   };
 
   const downloadSample = () => {
-    // Generate Sample CSV on the fly
+    // Generate Sample CSV on the fly with proper headers
     const csvContent = `address,landmark,city,state,country\n` +
                        `1600 Pennsylvania Ave NW,White House,Washington,DC,USA\n` +
                        `Empire State Building,,New York,NY,USA\n` +
@@ -633,21 +642,21 @@ export default function Dashboard() {
                             {currentBatch.preview && currentBatch.preview.length > 0 ? (
                                 <div className="overflow-x-auto border rounded-xl max-h-96 shadow-sm">
                                     <table className="w-full text-sm text-left">
-                                        <thead className="bg-gray-50 sticky top-0 z-10 shadow-sm">
+                                        <thead className="bg-gray-50 sticky top-0 z-10">
                                             <tr>
-                                                <th className="p-4 font-semibold text-gray-700 border-b">Address</th>
-                                                <th className="p-4 font-semibold text-gray-700 border-b">Lat/Lng</th>
-                                                <th className="p-4 font-semibold text-gray-700 border-b">Status</th>
-                                                <th className="p-4 font-semibold text-gray-700 border-b text-center">Map</th>
+                                                <th className="p-4 font-semibold text-gray-700 bg-gray-50 border-b">Address</th>
+                                                <th className="p-4 font-semibold text-gray-700 bg-gray-50 border-b">Lat/Lng</th>
+                                                <th className="p-4 font-semibold text-gray-700 bg-gray-50 border-b">Status</th>
+                                                <th className="p-4 font-semibold text-gray-700 bg-gray-50 border-b text-center">Map</th>
                                             </tr>
                                         </thead>
                                         <tbody className="divide-y divide-gray-100">
                                             {currentBatch.preview.map((row: any, i: number) => (
                                                 <tr key={i} className="hover:bg-gray-50 transition-colors">
                                                     <td className="p-4 truncate max-w-xs text-gray-700 font-medium">{row.address}</td>
-                                                    <td className="p-4 font-mono text-xs text-gray-500">{row.lat ? `${row.lat}, ${row.lng}` : '-'}</td>
+                                                    <td className="p-4 font-mono text-xs text-gray-600">{row.lat ? `${row.lat}, ${row.lng}` : '-'}</td>
                                                     <td className="p-4 font-bold text-green-600">{row.status}</td>
-                                                    {/* Map Pin Link */}
+                                                    {/* NEW: Map Pin Link */}
                                                     <td className="p-4 text-center">
                                                         {row.lat && (
                                                             <a 

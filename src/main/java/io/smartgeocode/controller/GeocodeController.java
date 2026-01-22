@@ -1,8 +1,8 @@
 package io.smartgeocode.controller;
 
-// ============================================================================
-// IMPORTS - CORE
-// ============================================================================
+// =========================================================================================
+// SECTION 1: CORE IMPORTS
+// =========================================================================================
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.servlet.view.RedirectView;
 import org.springframework.web.multipart.MultipartFile;
@@ -12,9 +12,9 @@ import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.http.HttpStatus;
 
-// ============================================================================
-// IMPORTS - UTILITIES & JAVA
-// ============================================================================
+// =========================================================================================
+// SECTION 2: UTILITY IMPORTS
+// =========================================================================================
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
@@ -36,19 +36,18 @@ import java.util.UUID;
 import java.nio.charset.StandardCharsets;
 import jakarta.annotation.PostConstruct;
 import java.io.InputStreamReader;
+import java.io.IOException;
 
-// ============================================================================
-// IMPORTS - DATABASE
-// ============================================================================
+// =========================================================================================
+// SECTION 3: DATABASE & SECURITY IMPORTS
+// =========================================================================================
 import javax.sql.DataSource;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.Statement;
+import java.sql.SQLException;
 
-// ============================================================================
-// IMPORTS - SECURITY
-// ============================================================================
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import io.jsonwebtoken.Jwts;
 import io.jsonwebtoken.SignatureAlgorithm;
@@ -56,10 +55,11 @@ import io.jsonwebtoken.Claims;
 import io.jsonwebtoken.security.Keys;
 import javax.crypto.SecretKey;
 
-// ============================================================================
-// IMPORTS - EXTERNAL LIBRARIES (CSV, EMAIL, STRIPE)
-// ============================================================================
+// =========================================================================================
+// SECTION 4: EXTERNAL SERVICES (CSV, EMAIL, STRIPE)
+// =========================================================================================
 import com.opencsv.CSVReader;
+import com.opencsv.exceptions.CsvValidationException;
 import io.smartgeocode.service.LookupService;
 
 import com.sendgrid.SendGrid;
@@ -77,68 +77,82 @@ import com.stripe.net.Webhook;
 import com.stripe.model.Subscription;
 import com.stripe.exception.SignatureVerificationException;
 
+/**
+ * GeocodeController
+ * Handles all geocoding requests, batch processing, authentication, billing, and user management.
+ * This is the monolithic controller for the SmartGeocode application.
+ */
 @RestController
 @RequestMapping("/api")
 @CrossOrigin(origins = {"http://localhost:3000", "https://geocode-frontend.smartgeocode.io", "https://smartgeocode.io"}, allowCredentials = "true")
 public class GeocodeController {
 
-    // ========================================================================
-    // 1. CLASS CONFIGURATION & CONSTANTS
-    // ========================================================================
-    
-    // HTTP/1.1 Fix: Prevents "GOAWAY" errors from older servers (Nominatim)
+    // =========================================================================================
+    // CONFIGURATION & CONSTANTS
+    // =========================================================================================
+
+    // HTTP Client: Forced to HTTP/1.1 to avoid "GOAWAY" errors from some geocoding providers
     private final HttpClient client = HttpClient.newBuilder()
             .version(HttpClient.Version.HTTP_1_1)
             .build();
             
     private final ObjectMapper mapper = new ObjectMapper();
+    
+    // API Keys loaded from Environment Variables
     private final String SENDGRID_API_KEY = System.getenv("SENDGRID_API_KEY");
     
-    // Rate Limiting: 1.1s absolute minimum for Nominatim compliance
+    // Rate Limiting: 1.1s absolute minimum delay to respect Nominatim Usage Policy
     private final int API_DELAY_MS = 1100; 
 
+    // Database Connection Pool
     @Autowired
     private DataSource dataSource;
 
+    // Lookup Service for Usage Tracking
     @Autowired
     private LookupService lookupService;
 
+    // Security Components
     private final BCryptPasswordEncoder encoder = new BCryptPasswordEncoder();
     private final String JWT_SECRET;
 
-    // === CRITICAL AUTH FIX: STABLE JWT SECRET ===
-    // Prevents "Auth Token Invalid" errors when the server restarts.
+    // =========================================================================================
+    // CONSTRUCTOR & INITIALIZATION
+    // =========================================================================================
+
+    // Initialization Block for JWT Secret
     {
         String envSecret = System.getenv("JWT_SECRET");
         if (envSecret != null && envSecret.length() >= 32) {
             JWT_SECRET = envSecret;
             System.out.println("✅ Loaded JWT_SECRET from Environment Variables.");
         } else {
-            System.err.println("⚠️ WARNING: JWT_SECRET missing or too short. Using STABLE fallback key for persistence.");
-            // This key allows existing browser tokens to remain valid after a restart/re-deploy.
-            JWT_SECRET = "dev-secret-key-change-this-in-prod-must-be-very-long-string-to-be-secure";
+            // CRITICAL FALLBACK: Using a stable key to ensure tokens persist across server restarts
+            System.err.println("⚠️ WARNING: JWT_SECRET missing or too short. Using STABLE fallback key.");
+            JWT_SECRET = "smartgeocode-secure-fallback-key-2026-fixed-for-stability-and-persistence";
         }
     }
 
     public GeocodeController() {
-        System.out.println("=== GeocodeController Live: Heavy-Duty Version Loaded (v4.0) ===");
+        System.out.println("=== GeocodeController Live: Heavy-Duty Version Loaded (v5.1 Fixed Compilation) ===");
     }
 
+    // Static Block for Critical Stripe Check
     static {
         if (System.getenv("STRIPE_CKOUT_SECRET_KEY") == null) {
             System.err.println("CRITICAL WARNING: STRIPE_CKOUT_SECRET_KEY is missing! Checkout will fail.");
         }
     }
 
-    // ========================================================================
-    // 2. DATABASE INITIALIZATION
-    // ========================================================================
+    // =========================================================================================
+    // DATABASE MIGRATION / SCHEMA CHECK
+    // =========================================================================================
     @PostConstruct
     public void initDatabase() {
         try (Connection conn = dataSource.getConnection()) {
             System.out.println("Checking DB Schema...");
             
-            // Users Table
+            // 1. Users Table
             String sqlUsers = "CREATE TABLE IF NOT EXISTS users (" +
                               "id SERIAL PRIMARY KEY, " +
                               "email VARCHAR(255) UNIQUE NOT NULL, " +
@@ -148,7 +162,8 @@ public class GeocodeController {
                               "stripe_customer_id VARCHAR(255))";
             conn.prepareStatement(sqlUsers).execute();
 
-            // Batches Table - 'results' is TEXT to hold full CSV output
+            // 2. Batches Table
+            // 'results' column is TEXT to hold the full CSV output string
             String sqlBatches = "CREATE TABLE IF NOT EXISTS batches (" +
                                 "id SERIAL PRIMARY KEY, " +
                                 "user_id INTEGER REFERENCES users(id), " +
@@ -159,71 +174,89 @@ public class GeocodeController {
                                 "processed_rows INTEGER DEFAULT 0)";
             conn.prepareStatement(sqlBatches).execute();
             
-            System.out.println("DB Schema Verified: Tables ready.");
+            System.out.println("DB Schema Verified: Users and Batches tables are ready.");
         } catch (Exception e) {
             System.err.println("DB Init Failed: " + e.getMessage());
             e.printStackTrace();
         }
     }
 
-    // ========================================================================
-    // 3. AUTHENTICATION HELPER
-    // ========================================================================
+    // =========================================================================================
+    // AUTHENTICATION HELPER METHODS
+    // =========================================================================================
+    
+    /**
+     * Extracts the User ID from the Authorization Header (Bearer Token).
+     * Returns 0L if token is invalid, missing, or malformed.
+     */
     private Long extractUserId(String authHeader) {
-        if (authHeader == null || !authHeader.startsWith("Bearer ")) return 0L;
+        if (authHeader == null || !authHeader.startsWith("Bearer ")) {
+            return 0L;
+        }
         try {
             String token = authHeader.substring(7);
-            if ("null".equals(token) || "undefined".equals(token) || token.isEmpty()) return 0L;
+            // Handle "null" string edge case from some frontend clients
+            if ("null".equals(token) || "undefined".equals(token) || token.isEmpty()) {
+                return 0L;
+            }
             
             Claims claims = Jwts.parserBuilder()
                 .setSigningKey(JWT_SECRET.getBytes(StandardCharsets.UTF_8))
                 .build()
                 .parseClaimsJws(token)
                 .getBody();
-            return claims.get("userId", Long.class);
+            
+            // CRITICAL FIX: Safe Integer -> Long conversion
+            // Some JWT libraries parse numbers as Integers, direct cast to Long throws error
+            Object userIdObj = claims.get("userId");
+            if (userIdObj instanceof Integer) {
+                return ((Integer) userIdObj).longValue();
+            } else if (userIdObj instanceof Long) {
+                return (Long) userIdObj;
+            }
+            return 0L;
         } catch (Exception e) {
             System.err.println("Auth Token Invalid: " + e.getMessage());
             return 0L;
         }
     }
 
-    // ========================================================================
-    // 4. API ENDPOINT: SINGLE GEOCODE
-    // ========================================================================
+    // =========================================================================================
+    // API ENDPOINT: SINGLE GEOCODE LOOKUP
+    // =========================================================================================
     @GetMapping("/geocode")
     public ResponseEntity<Map<String, Object>> geocode(@RequestParam("address") String addr, @RequestHeader(value = "Authorization", required = false) String authHeader) {
-        // Validation
+        // 1. Validation
         if (addr == null || addr.isEmpty()) {
             return ResponseEntity.badRequest().body(Map.of("status", "error", "message", "Missing address parameter"));
         }
 
-        // Auth Check
+        // 2. Authentication
         Long userId = extractUserId(authHeader);
-        // If token is invalid (0L), returning 401 forces frontend to logout/refresh
         if (userId == 0L) {
             return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(Map.of("status", "error", "message", "Invalid Token"));
         }
 
         System.out.println("Single Lookup Request. User: " + userId + " Addr: " + addr);
 
-        // Limit Check
+        // 3. Limit Check
         if (!lookupService.canPerformLookup(userId, 1)) {
             return ResponseEntity.status(403).body(Map.of("status", "error", "message", "Monthly limit reached. Upgrade to Premium."));
         }
 
-        // Perform Search
+        // 4. Perform Geocode
         Map<String, Object> result = performGeocodeRequest(addr);
         
-        // Update Usage
+        // 5. Update Usage (Only on Success)
         if ("success".equals(result.get("status"))) {
             lookupService.incrementLookup(userId, 1);
         }
         return ResponseEntity.ok(result);
     }
 
-    // ========================================================================
-    // 5. API ENDPOINT: BATCH GEOCODE (THE HEAVY LIFTER)
-    // ========================================================================
+    // =========================================================================================
+    // API ENDPOINT: BATCH GEOCODE (ASYNC PROCESSING)
+    // =========================================================================================
     @PostMapping(value = "/batch-geocode", consumes = "multipart/form-data")
     public ResponseEntity<Map<String, Object>> batchGeocode(@RequestParam("file") MultipartFile file, @RequestParam("email") String email, @RequestHeader(value = "Authorization", required = false) String authHeader) {
         
@@ -235,47 +268,50 @@ public class GeocodeController {
         }
 
         try {
-            // A. Authenticate / Resolve User ID
-            Long dbUserId;
+            // A. Resolve User ID (Token preferred, Fallback to Email for stability)
+            Long dbUserId = 0L;
             try (Connection conn = dataSource.getConnection()) {
                 PreparedStatement stmt = conn.prepareStatement("SELECT id FROM users WHERE email = ?");
                 stmt.setString(1, email);
                 ResultSet rs = stmt.executeQuery();
-                if (!rs.next()) {
-                    return ResponseEntity.status(404).body(Map.of("status", "error", "message", "User email not found in database"));
+                if (rs.next()) {
+                    dbUserId = rs.getLong("id");
                 }
-                dbUserId = rs.getLong("id");
+            }
+            
+            if (dbUserId == 0L) {
+                return ResponseEntity.status(404).body(Map.of("status", "error", "message", "User email not found in database"));
             }
 
-            // B. Parse CSV (Count Rows First)
+            // Use Token ID if valid, otherwise fallback to DB ID
+            Long finalUserId = (tokenUserId != 0L) ? tokenUserId : dbUserId;
+            
+            // B. Parse CSV to Count Rows (Strict Validation)
             List<String[]> validRows = new ArrayList<>();
             try (CSVReader reader = new CSVReader(new InputStreamReader(file.getInputStream()))) {
                 String[] line;
                 while ((line = reader.readNext()) != null) {
-                    // Skip empty lines or comments
+                    // Skip empty lines, comments, or header-like repetition
                     if (line.length > 0 && !line[0].trim().startsWith("#") && !allColumnsEmpty(line)) {
                         validRows.add(line);
                     }
                 }
             }
-            // Subtract 1 for header if it exists (Checked later, but assuming 1st row is header for count)
+            // Subtract 1 assuming the first row is a header
             int rowCount = validRows.isEmpty() ? 0 : validRows.size() - 1; 
 
-            // C. Check Limits BEFORE processing
-            // Use Token ID if available (secure), otherwise DB ID (fallback)
-            Long limitUserId = tokenUserId != 0L ? tokenUserId : dbUserId;
-            
-            System.out.println("Batch Limit Check - UserID: " + limitUserId + ", Rows: " + rowCount);
+            System.out.println("Batch Pre-Check - UserID: " + finalUserId + ", Rows: " + rowCount);
 
-            if (!lookupService.canPerformLookup(limitUserId, rowCount)) {
+            // C. Check Usage Limits BEFORE Processing
+            if (!lookupService.canPerformLookup(finalUserId, rowCount)) {
                 return ResponseEntity.status(403).body(Map.of("status", "error", "message", "Batch size (" + rowCount + ") exceeds remaining monthly limit. Please upgrade."));
             }
 
-            // D. Init Batch Record in DB
+            // D. Create Batch Record in DB
             int batchId;
             try (Connection conn = dataSource.getConnection()) {
                 PreparedStatement stmt = conn.prepareStatement("INSERT INTO batches (user_id, status, total_rows, processed_rows) VALUES (?, 'processing', ?, 0)", Statement.RETURN_GENERATED_KEYS);
-                stmt.setLong(1, limitUserId);
+                stmt.setLong(1, finalUserId);
                 stmt.setInt(2, rowCount);
                 stmt.executeUpdate();
                 ResultSet keys = stmt.getGeneratedKeys();
@@ -283,9 +319,11 @@ public class GeocodeController {
                 batchId = keys.getInt(1);
             }
 
-            // E. Start Async Process (Fire and Forget)
-            System.out.println("Starting Async Batch #" + batchId + " for UserID " + limitUserId);
-            CompletableFuture.runAsync(() -> processBatchLogic(batchId, limitUserId, validRows, email));
+            // E. Start Async Processing Thread
+            System.out.println("Starting Async Batch #" + batchId + " for UserID " + finalUserId);
+            
+            // Fire and Forget - The thread will handle the heavy lifting
+            CompletableFuture.runAsync(() -> processBatchLogic(batchId, finalUserId, validRows, email));
             
             return ResponseEntity.ok(Map.of("status", "success", "batchId", batchId, "message", "Processing started in background.", "totalRows", rowCount));
 
@@ -295,9 +333,9 @@ public class GeocodeController {
         }
     }
 
-    // ========================================================================
-    // 6. THE "IRON CLAD" LOGIC ENGINE (Waterfall Strategy)
-    // ========================================================================
+    // =========================================================================================
+    // LOGIC ENGINE: WATERFALL GEOCODING PROCESSOR
+    // =========================================================================================
     private void processBatchLogic(int batchId, Long userId, List<String[]> rows, String email) {
         StringBuilder csvOutput = new StringBuilder();
         // Add headers for result CSV
@@ -308,15 +346,16 @@ public class GeocodeController {
         
         int processed = 0;
 
+        // Iterate through all rows
         for (String[] line : rows) {
-            // 1. Handle Header Row
+            // 1. Process Header Row
             if (headers == null) {
                 headers = line;
                 for(int i=0; i<headers.length; i++) {
-                    // Normalize to lowercase for case-insensitive matching
+                    // Normalize header names to lowercase
                     colMap.put(headers[i].toLowerCase().trim(), i);
                 }
-                // Validate required columns
+                // Validate required columns exist
                 if (!colMap.containsKey("address") && !colMap.containsKey("landmark")) {
                     failBatch(batchId, "Invalid CSV: Must contain 'address' or 'landmark' column header.");
                     return;
@@ -324,16 +363,15 @@ public class GeocodeController {
                 continue;
             }
 
-            // 2. Dynamic Limit Check (Stop if user runs out mid-batch)
+            // 2. Dynamic Limit Check (Stop if user runs out of credits mid-batch)
             if (!lookupService.canPerformLookup(userId, 1)) {
                  csvOutput.append("\"LIMIT REACHED\",\"\",\"\",\"Upgrade to continue processing\",\"skipped\",\"limit_hit\"\n");
-                 // Save what we have so far
                  finishBatch(batchId, csvOutput.toString(), processed);
                  System.out.println("Batch #" + batchId + " stopped: Limit reached.");
                  return;
             }
 
-            // 3. Extract Data Fields safely
+            // 3. Extract Data Fields (Safely handling missing columns)
             processed++;
             String address = getVal(line, colMap, "address");
             String landmark = getVal(line, colMap, "landmark");
@@ -345,49 +383,50 @@ public class GeocodeController {
             Map<String, Object> result = Map.of("status", "error");
             String matchType = "none";
 
-            // --- WATERFALL STRATEGY (High Accuracy) ---
-            // This attempts multiple variations to find the best match
+            // --- WATERFALL STRATEGY START ---
+            // Try most specific query first, then fallback to broader queries
             
-            // Attempt 1: Landmark + City + Country (Best for famous places like 'Taj Mahal, Agra')
+            // Attempt 1: Landmark + City + Country
             if (!landmark.isEmpty()) {
                 String q = buildQuery(landmark, city, state, country);
                 result = performGeocodeRequest(q);
                 if ("success".equals(result.get("status"))) matchType = "landmark_context";
             }
 
-            // Attempt 2: Address + City + State + Zip (Standard Postal Lookup)
+            // Attempt 2: Address + City + State + Country (Standard)
             if (!"success".equals(result.get("status")) && !address.isEmpty()) {
                 String q = buildQuery(address, city, state, country);
                 result = performGeocodeRequest(q);
                 if ("success".equals(result.get("status"))) matchType = "address_context";
             }
 
-            // Attempt 3: Landmark Only (Global search, fallback)
+            // Attempt 3: Landmark Only (Global Search)
             if (!"success".equals(result.get("status")) && !landmark.isEmpty()) {
                 result = performGeocodeRequest(landmark);
                 if ("success".equals(result.get("status"))) matchType = "landmark_only";
             }
 
-            // Attempt 4: Address Only (Fallback)
+            // Attempt 4: Address Only (Global Search)
             if (!"success".equals(result.get("status")) && !address.isEmpty()) {
                 result = performGeocodeRequest(address);
                 if ("success".equals(result.get("status"))) matchType = "address_only";
             }
 
-            // Attempt 5: City/Zip Fallback (Last resort - better than nothing)
+            // Attempt 5: City/Zip Fallback (Last Resort)
             if (!"success".equals(result.get("status"))) {
-                 String q = buildQuery("", city, state, country); // Just city/country
+                 String q = buildQuery("", city, state, country); 
                  if (!q.isEmpty()) {
                      result = performGeocodeRequest(q);
                      if ("success".equals(result.get("status"))) matchType = "city_fallback";
                  }
             }
+            // --- WATERFALL STRATEGY END ---
 
-            // 4. Append to CSV Result (Robust CSV Formatting)
+            // 4. Format Output Row for CSV
             String inputRep = (landmark + " " + address).trim();
             // Escape double quotes for CSV safety
             String rowString = String.format("\"%s\",\"%s\",\"%s\",\"%s\",\"%s\",\"%s\"\n", 
-                inputRep.replace("\"", "\"\""),
+                inputRep.replace("\"", "\"\""), // Escape quotes
                 result.getOrDefault("lat", ""),
                 result.getOrDefault("lng", ""),
                 result.getOrDefault("formatted_address", "").toString().replace("\"", "\"\""),
@@ -396,30 +435,36 @@ public class GeocodeController {
             );
             csvOutput.append(rowString);
 
-            // 5. Update Usage & DB (LIVE UPDATE)
+            // 5. Update Usage & DB (CRITICAL: LIVE COUNTER UPDATE)
             if ("success".equals(result.get("status"))) {
                 try {
-                    // EXPLICIT INCREMENT - This connects the Batch Loop to the Usage Counter
-                    System.out.println("[BATCH] Incrementing usage for User ID: " + userId);
+                    // Log for debugging
+                    System.out.println("[BATCH] Match Found! Incrementing usage for User ID: " + userId);
+                    // Synchronous DB Call
                     lookupService.incrementLookup(userId, 1);
                 } catch (Exception e) {
                     System.err.println("[BATCH] Failed to increment usage: " + e.getMessage());
                 }
             }
 
-            // CRITICAL: Update DB every row so frontend polling sees live data
+            // Update Progress in DB so Frontend can poll it
             updateBatchProgress(batchId, processed, csvOutput.toString());
             
-            // 6. Rate Limit Delay (Respect Nominatim Policy)
+            // 6. Rate Limiting (Sleep to avoid bans)
             try { Thread.sleep(API_DELAY_MS); } catch (InterruptedException ignored) {}
         }
 
         // Finalize Batch
         finishBatch(batchId, csvOutput.toString(), processed);
         sendCompletionEmail(email, batchId, processed);
-        System.out.println("Batch #" + batchId + " Complete. Rows: " + processed);
+        System.out.println("Batch #" + batchId + " Complete. Total Rows: " + processed);
     }
 
+    // =========================================================================================
+    // HELPER METHODS
+    // =========================================================================================
+    
+    // Safely get value from CSV row
     private String getVal(String[] line, Map<String, Integer> map, String key) {
         if (map.containsKey(key) && map.get(key) < line.length) {
             String val = line[map.get(key)];
@@ -428,7 +473,7 @@ public class GeocodeController {
         return "";
     }
 
-    // Helper Method for Waterfall Logic
+    // Build Query String from parts
     private String buildQuery(String main, String city, String state, String country) {
         List<String> parts = new ArrayList<>();
         if (main != null && !main.isEmpty()) parts.add(main);
@@ -438,6 +483,7 @@ public class GeocodeController {
         return String.join(", ", parts);
     }
 
+    // Perform HTTP Request to Nominatim
     private Map<String, Object> performGeocodeRequest(String query) {
         try {
             if (query.trim().isEmpty()) return Map.of("status", "skipped");
@@ -472,10 +518,9 @@ public class GeocodeController {
         return Map.of("status", "error");
     }
 
-    // === 4. DB UPDATE HELPERS (LIVE) ===
+    // DB Update: Progress
     private void updateBatchProgress(int batchId, int count, String partialCsv) {
         try (Connection conn = dataSource.getConnection()) {
-            // Update BOTH processed count AND the results text for live preview
             PreparedStatement stmt = conn.prepareStatement("UPDATE batches SET processed_rows = ?, results = ? WHERE id = ?");
             stmt.setInt(1, count);
             stmt.setString(2, partialCsv);
@@ -486,6 +531,7 @@ public class GeocodeController {
         }
     }
 
+    // DB Update: Finish
     private void finishBatch(int batchId, String csv, int total) {
         try (Connection conn = dataSource.getConnection()) {
             PreparedStatement stmt = conn.prepareStatement("UPDATE batches SET status = 'complete', results = ?, processed_rows = ? WHERE id = ?");
@@ -496,6 +542,7 @@ public class GeocodeController {
         } catch (Exception e) { e.printStackTrace(); }
     }
 
+    // DB Update: Fail
     private void failBatch(int batchId, String reason) {
         try (Connection conn = dataSource.getConnection()) {
             PreparedStatement stmt = conn.prepareStatement("UPDATE batches SET status = 'failed', results = ? WHERE id = ?");
@@ -503,8 +550,8 @@ public class GeocodeController {
         } catch (Exception e) {}
     }
 
+    // SendGrid Email
     private void sendCompletionEmail(String email, int batchId, int total) {
-        // SendGrid implementation
         Email from = new Email("noreply@smartgeocode.io");
         Email to = new Email(email);
         String subject = "Batch Processing Complete";
@@ -521,9 +568,10 @@ public class GeocodeController {
         } catch (Exception e) { e.printStackTrace(); }
     }
 
-    // === 5. ENDPOINTS FOR FRONTEND ===
+    // =========================================================================================
+    // API ENDPOINTS: BATCH MANAGEMENT
+    // =========================================================================================
     
-    // Helper: Parse partial CSV for live table
     @GetMapping("/batch/{id}")
     public ResponseEntity<Map<String, Object>> getBatchStatus(@PathVariable int id, @RequestParam("email") String email) {
         try (Connection conn = dataSource.getConnection()) {
@@ -595,7 +643,9 @@ public class GeocodeController {
         return ResponseEntity.notFound().build();
     }
 
-    // === 6. AUTH, EMAIL & ADMIN (Existing) ===
+    // =========================================================================================
+    // API ENDPOINTS: AUTHENTICATION & USER MANAGEMENT
+    // =========================================================================================
     @PostMapping("/login")
     public ResponseEntity<Map<String, Object>> login(@RequestBody Map<String, String> creds) {
         try (Connection conn = dataSource.getConnection()) {
@@ -608,44 +658,6 @@ public class GeocodeController {
             }
             return ResponseEntity.status(401).body(Map.of("status", "error", "message", "Invalid credentials"));
         } catch (Exception e) { return ResponseEntity.status(500).body(Map.of("status", "error", "message", "Error")); }
-    }
-
-    @PostMapping("/email")
-    public ResponseEntity<String> sendEmail(@RequestBody Map<String, Object> payload) {
-        String email = (String) payload.get("email");
-        String address = (String) payload.get("address");
-        Map<String, Object> result = (Map<String, Object>) payload.get("result");
-        
-        // 1. Capture Lead
-        try (Connection conn = dataSource.getConnection()) {
-            PreparedStatement check = conn.prepareStatement("SELECT id FROM users WHERE email = ?");
-            check.setString(1, email);
-            if (!check.executeQuery().next()) {
-                String randomPass = UUID.randomUUID().toString();
-                PreparedStatement insert = conn.prepareStatement("INSERT INTO users (email, password_hash, subscription_status) VALUES (?, ?, 'lead')");
-                insert.setString(1, email);
-                insert.setString(2, encoder.encode(randomPass));
-                insert.executeUpdate();
-            }
-        } catch (Exception e) {}
-
-        // 2. Send Email
-        Email from = new Email("noreply@smartgeocode.io");
-        Email to = new Email(email);
-        String link = "https://geocode-frontend.smartgeocode.io/signup?email=" + email;
-        String body = "Results for: " + address + "\n\nLat: " + result.get("lat") + "\nLng: " + result.get("lng") + 
-                      "\n\nClaim account: " + link;
-        Content content = new Content("text/plain", body);
-        Mail mail = new Mail(from, "Your Geocode Results", to, content);
-        try {
-            SendGrid sg = new SendGrid(SENDGRID_API_KEY);
-            Request request = new Request();
-            request.setMethod(Method.POST);
-            request.setEndpoint("mail/send");
-            request.setBody(mail.build());
-            sg.api(request);
-            return ResponseEntity.ok("Email sent");
-        } catch (Exception e) { return ResponseEntity.status(500).body("Email failed"); }
     }
 
     @PostMapping("/signup")
@@ -678,25 +690,25 @@ public class GeocodeController {
         } catch (Exception e) { return ResponseEntity.status(500).body(Map.of("status", "error", "message", e.getMessage())); }
     }
 
-    // === UTILS ===
-    private boolean allColumnsEmpty(String[] line) {
-        if (line == null) return true;
-        for(String s : line) if(s != null && !s.trim().isEmpty()) return false;
-        return true;
-    }
-    
     private String generateToken(String email, int userId) {
-        return Jwts.builder().setSubject(email).claim("userId", userId).setIssuedAt(new Date()).setExpiration(new Date(System.currentTimeMillis() + 604800000)).signWith(SignatureAlgorithm.HS256, JWT_SECRET).compact();
+        return Jwts.builder()
+            .setSubject(email)
+            .claim("userId", userId)
+            .setIssuedAt(new Date())
+            .setExpiration(new Date(System.currentTimeMillis() + 604800000)) // 7 Days
+            .signWith(SignatureAlgorithm.HS256, JWT_SECRET)
+            .compact();
     }
     
-    // CRITICAL FIX: USAGE ENDPOINT
-    // If token is invalid (0L), return 401 Unauthorized so frontend can logout.
+    // =========================================================================================
+    // API ENDPOINT: USAGE STATS
+    // =========================================================================================
     @GetMapping("/usage")
     public ResponseEntity<Map<String, Object>> getUsage(@RequestHeader(value = "Authorization", required = false) String authHeader) {
         Long userId = extractUserId(authHeader);
         
+        // Return 401 if token is invalid so frontend can logout
         if (userId == 0L) {
-            // This is the signal for the frontend to clear the token
             return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(Map.of("error", "Invalid Token"));
         }
         
@@ -791,5 +803,12 @@ public class GeocodeController {
             }
             return ResponseEntity.ok("Received");
         } catch (Exception e) { return ResponseEntity.status(400).body("Error"); }
+    }
+    
+    // === MISSING UTILS RESTORED ===
+    private boolean allColumnsEmpty(String[] line) {
+        if (line == null) return true;
+        for(String s : line) if(s != null && !s.trim().isEmpty()) return false;
+        return true;
     }
 }

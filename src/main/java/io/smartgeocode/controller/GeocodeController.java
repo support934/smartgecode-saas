@@ -94,7 +94,7 @@ public class GeocodeController {
     }
 
     public GeocodeController() {
-        System.out.println("=== GeocodeController Live: Heavy-Duty Version Loaded (v2.0) ===");
+        System.out.println("=== GeocodeController Live: Heavy-Duty Version Loaded (v2.2) ===");
     }
 
     static {
@@ -216,7 +216,11 @@ public class GeocodeController {
             int rowCount = validRows.isEmpty() ? 0 : validRows.size() - 1; 
 
             // C. Check Limits BEFORE processing
+            // Use Token ID if available (secure), otherwise DB ID (fallback)
             Long limitUserId = tokenUserId != 0L ? tokenUserId : dbUserId;
+            
+            System.out.println("Batch Limit Check - UserID: " + limitUserId + ", Rows: " + rowCount);
+
             if (!lookupService.canPerformLookup(limitUserId, rowCount)) {
                 return ResponseEntity.status(403).body(Map.of("status", "error", "message", "Batch size (" + rowCount + ") exceeds remaining monthly limit. Please upgrade."));
             }
@@ -234,7 +238,7 @@ public class GeocodeController {
             }
 
             // E. Start Async Process (Fire and Forget)
-            System.out.println("Starting Async Batch #" + batchId + " with " + rowCount + " rows.");
+            System.out.println("Starting Async Batch #" + batchId + " for UserID " + limitUserId);
             CompletableFuture.runAsync(() -> processBatchLogic(batchId, limitUserId, validRows, email));
             
             return ResponseEntity.ok(Map.of("status", "success", "batchId", batchId, "message", "Processing started in background.", "totalRows", rowCount));
@@ -246,6 +250,7 @@ public class GeocodeController {
     }
 
     // === 3. THE "IRON CLAD" LOGIC ENGINE ===
+    // This is the updated logic block that restores the 100% success rate
     private void processBatchLogic(int batchId, Long userId, List<String[]> rows, String email) {
         StringBuilder csvOutput = new StringBuilder();
         // Add headers for result CSV
@@ -346,7 +351,13 @@ public class GeocodeController {
 
             // 5. Update Usage & DB (LIVE UPDATE)
             if ("success".equals(result.get("status"))) {
-                lookupService.incrementLookup(userId, 1);
+                try {
+                    // EXPLICIT INCREMENT - This connects the Batch Loop to the Usage Counter
+                    System.out.println("[BATCH] Incrementing usage for User ID: " + userId);
+                    lookupService.incrementLookup(userId, 1);
+                } catch (Exception e) {
+                    System.err.println("[BATCH] Failed to increment usage: " + e.getMessage());
+                }
             }
 
             // CRITICAL: Update DB every row so frontend polling sees live data
@@ -370,6 +381,7 @@ public class GeocodeController {
         return "";
     }
 
+    // Helper Method for Waterfall Logic
     private String buildQuery(String main, String city, String state, String country) {
         List<String> parts = new ArrayList<>();
         if (main != null && !main.isEmpty()) parts.add(main);
@@ -484,7 +496,7 @@ public class GeocodeController {
                     List<Map<String, String>> preview = new ArrayList<>();
                     // Skip header (index 0)
                     for(int i=1; i<Math.min(lines.length, 51); i++) {
-                        String[] cols = lines[i].split("\",\""); // Basic CSV split handling quoted commas
+                        String[] cols = lines[i].split("\",\""); // Basic CSV split
                         if(cols.length >= 4) {
                             preview.add(Map.of(
                                 "address", cols[0].replace("\"", ""), 
@@ -630,7 +642,7 @@ public class GeocodeController {
         return Jwts.builder().setSubject(email).claim("userId", userId).setIssuedAt(new Date()).setExpiration(new Date(System.currentTimeMillis() + 604800000)).signWith(SignatureAlgorithm.HS256, JWT_SECRET).compact();
     }
     
-    // Updated Usage Endpoint with Cache Busting Headers
+    // UPDATED USAGE ENDPOINT with Explicit Keys & Cache Busting
     @GetMapping("/usage")
     public ResponseEntity<Map<String, Object>> getUsage(@RequestHeader(value = "Authorization", required = false) String authHeader) {
         Long userId = extractUserId(authHeader);

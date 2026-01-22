@@ -35,8 +35,10 @@ export default function Dashboard() {
   const [usage, setUsage] = useState({ used: 0, limit: 500 });
   const [usageLoading, setUsageLoading] = useState(true);
 
-  // LIVE POLLING REFS (Critical for fixing "Stale State" bugs)
-  const [pollInterval, setPollInterval] = useState<NodeJS.Timeout | null>(null);
+  // --- POLLING STATE (FIX FOR INFINITE LOOP) ---
+  // Instead of storing the interval ID, we store the ID of the batch we are watching.
+  // The useEffect hook below handles the start/stop logic automatically.
+  const [pollingBatchId, setPollingBatchId] = useState<number | null>(null);
   const emailRef = useRef(''); // Keeps track of email inside intervals
   const notifiedRef = useRef<Set<number>>(new Set()); // Tracks batches we have already notified about
 
@@ -79,16 +81,11 @@ export default function Dashboard() {
         setUsageLoading(false);
       }
     }
-    
-    // Cleanup polling on unmount
-    return () => stopPolling();
   }, []);
 
   // --- HELPER: FETCH USAGE (With Cache Busting) ---
   const fetchUsage = (token: string) => {
-      console.log(`Fetching usage at ${new Date().toISOString()}`); // Debug Log
-      
-      // We append ?t=... to force the browser to actually hit the server
+      // ?t=... forces the browser to ignore cache and get fresh DB values
       fetch(`/api/usage?t=${Date.now()}`, {
           headers: { 
             'Authorization': `Bearer ${token}`,
@@ -97,13 +94,20 @@ export default function Dashboard() {
           },
       })
       .then(res => {
+          if (res.status === 401) {
+              // Token is invalid (server restart?), stop polling to avoid spam
+              setPollingBatchId(null);
+              return null;
+          }
           if (!res.ok) throw new Error("Usage fetch failed");
           return res.json();
       })
       .then(data => {
-          // Standardized keys from backend logic
-          setUsage({ used: data.used || 0, limit: data.limit || 500 });
-          setUsageLoading(false);
+          if (data) {
+              // Standardized keys from backend logic
+              setUsage({ used: data.used || 0, limit: data.limit || 500 });
+              setUsageLoading(false);
+          }
       })
       .catch(err => {
           console.error("Usage Error:", err);
@@ -111,70 +115,58 @@ export default function Dashboard() {
       });
   };
 
-  // --- HELPER: LIVE POLLING LOGIC ---
-  const startPolling = (batchId: number) => {
-    stopPolling(); // Clear any existing pollers
-    
-    // Use REF to get email inside interval (fixes stale closure)
-    const currentEmail = emailRef.current || localStorage.getItem('email') || '';
-    if (!currentEmail) {
-        console.warn("Cannot start polling: No email found in ref.");
-        return;
-    }
+  // --- THE POLLING EFFECT (Replaces startPolling function) ---
+  useEffect(() => {
+    let intervalId: NodeJS.Timeout;
 
-    console.log(`Starting polling for Batch ID: ${batchId}`);
-
-    const interval = setInterval(async () => {
-      try {
-        const res = await fetch(`/api/batch/${batchId}?email=${encodeURIComponent(currentEmail)}`);
-        const data = await res.json();
+    if (pollingBatchId !== null) {
+        // Start the loop
+        console.log(`Starting poll for batch ${pollingBatchId}`);
         
-        // 1. Update Batch UI (Table & Progress)
-        // Use functional state update to ensure we don't lose previous state if needed
-        setCurrentBatch((prev: any) => ({
-            ...prev, // Keep existing fields like batchId
-            status: data.status,
-            processedRows: data.processedRows,
-            totalRows: data.totalRows,
-            preview: data.preview || [] 
-        }));
+        intervalId = setInterval(async () => {
+            const currentEmail = emailRef.current || localStorage.getItem('email') || '';
+            const token = localStorage.getItem('token'); 
 
-        // 2. Refresh Usage Counter LIVE
-        const token = localStorage.getItem('token');
-        if (token) fetchUsage(token);
+            try {
+                const res = await fetch(`/api/batch/${pollingBatchId}?email=${encodeURIComponent(currentEmail)}`);
+                const data = await res.json();
 
-        // 3. Check for Completion
-        if (data.status === 'complete' || data.status === 'failed') {
-            console.log(`Batch ${batchId} finished with status: ${data.status}`);
-            stopPolling(); // Stop the loop
-            loadBatches(currentEmail); // Refresh history list
-            
-            // PREVENT TOAST SPAM: Only notify if we haven't already
-            if (!notifiedRef.current.has(batchId)) {
-                if (data.status === 'complete') {
-                    toast.success('Batch Processing Complete!');
-                } else {
-                    toast.error('Batch Failed - Check logs');
+                // 1. Update UI
+                setCurrentBatch((prev: any) => ({
+                    ...prev,
+                    status: data.status,
+                    processedRows: data.processedRows,
+                    totalRows: data.totalRows,
+                    preview: data.preview || []
+                }));
+
+                // 2. Refresh Usage Live
+                if (token) fetchUsage(token);
+
+                // 3. Stop Logic
+                if (data.status === 'complete' || data.status === 'failed') {
+                    // Stop polling by clearing the state
+                    setPollingBatchId(null); 
+                    loadBatches(currentEmail);
+
+                    // Notify only once
+                    if (!notifiedRef.current.has(pollingBatchId)) {
+                        if (data.status === 'complete') toast.success('Batch Processing Complete!');
+                        else toast.error('Batch Failed');
+                        notifiedRef.current.add(pollingBatchId);
+                    }
                 }
-                notifiedRef.current.add(batchId); // Mark as notified
+            } catch (e) {
+                console.error("Poll tick failed", e);
             }
-        }
-      } catch (e) { 
-          // Ignore network blips during polling
-          console.log("Polling tick failed (network error?), retrying...", e);
-      }
-    }, 2000); // Poll every 2 seconds
-    
-    setPollInterval(interval);
-  };
-
-  const stopPolling = () => {
-    if (pollInterval) {
-        clearInterval(pollInterval);
-        setPollInterval(null);
-        console.log("Polling stopped.");
+        }, 2000);
     }
-  };
+
+    // Cleanup function: React runs this when component unmounts OR when pollingBatchId changes
+    return () => {
+        if (intervalId) clearInterval(intervalId);
+    };
+  }, [pollingBatchId]); // Dependency array ensures this runs only when ID changes
 
   // --- ACTIONS ---
   const loadBatches = async (userEmail: string) => {
@@ -243,8 +235,8 @@ export default function Dashboard() {
         loadBatches(email);
         toast.success('Batch started! Processing in background...');
         
-        // START POLLING
-        startPolling(data.batchId);
+        // TRIGGER POLLING
+        setPollingBatchId(data.batchId);
       } else {
         setError(data.message || 'Batch processing failed');
         toast.error('Batch failed to start');
@@ -360,7 +352,6 @@ export default function Dashboard() {
       <Toaster position="top-right" />
 
       {/* DASHBOARD TOOLBAR */}
-      {/* Replaces the old Header to avoid Double-Header issue with Layout.tsx */}
       <div className="bg-white border-b shadow-sm sticky top-0 z-40 px-6 py-4">
         <div className="max-w-7xl mx-auto flex flex-col md:flex-row items-center justify-between">
           <div className="flex items-center space-x-4 mb-3 md:mb-0">

@@ -1,4 +1,3 @@
-
 package io.smartgeocode.controller;
 
 import org.springframework.web.bind.annotation.*;
@@ -83,8 +82,7 @@ public class GeocodeController {
     private final BCryptPasswordEncoder encoder = new BCryptPasswordEncoder();
     private final String JWT_SECRET;
 
-    // === CRITICAL FIX: FORCE STABLE SECRET ===
-    // This prevents the "Auth Token Invalid" error on restarts
+    // Initialize JWT Secret from Env or Generate (CRITICAL: STABLE KEY)
     {
         String envSecret = System.getenv("JWT_SECRET");
         if (envSecret != null && envSecret.length() >= 32) {
@@ -98,7 +96,7 @@ public class GeocodeController {
     }
 
     public GeocodeController() {
-        System.out.println("=== GeocodeController Live: v3.1 (Stable Auth) ===");
+        System.out.println("=== GeocodeController Live: Heavy-Duty Version Loaded (v2.4) ===");
     }
 
     static {

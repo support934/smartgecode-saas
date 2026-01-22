@@ -1,43 +1,41 @@
 import { NextRequest, NextResponse } from 'next/server';
 
-export async function POST(request: NextRequest) {
+export async function POST(req: NextRequest) {
   try {
-    const formData = await request.formData();
-    const file = formData.get('file') as File | null;
-    const email = formData.get('email') as string | null;
+    const formData = await req.formData();
+    
+    // Check if the backend URL is configured
+    const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL || 'https://api-java-production-fb09.up.railway.app';
+    
+    // Get the auth token from the incoming request headers
+    const authHeader = req.headers.get('authorization');
 
-    if (!file || !email) {
-      return NextResponse.json({ status: 'error', message: 'Missing file or email' }, { status: 400 });
-    }
+    console.log(`[Proxy] Forwarding batch upload to: ${backendUrl}/api/batch-geocode`);
 
-    const backendFormData = new FormData();
-    backendFormData.append('file', file);
-    backendFormData.append('email', email);
-
-    const backendUrl = process.env.BACKEND_URL || 'https://smartgeocode-backend.up.railway.app'; // Use correct backend URL
-
-    console.log('Proxying batch to backend:', backendUrl + '/api/batch-geocode');
-
-    const res = await fetch(`${backendUrl}/api/batch-geocode`, {
+    // Forward the request to the Java Backend
+    const backendRes = await fetch(`${backendUrl}/api/batch-geocode`, {
       method: 'POST',
-      body: backendFormData,
+      headers: {
+        // Forward the Authorization header (Bearer token)
+        ...(authHeader && { 'Authorization': authHeader }),
+      },
+      body: formData, // Forward the multipart form data directly
     });
 
-    console.log('Backend response status:', res.status);
+    // Parse the response from the backend
+    const data = await backendRes.json();
 
-    if (!res.ok) {
-      const errorText = await res.text();
-      console.error('Backend error:', errorText);
-      throw new Error(`Backend failed: ${res.status} - ${errorText}`);
-    }
+    // CRITICAL FIX: Do NOT throw an error for non-200 statuses (like 403).
+    // Instead, forward the exact status code and body to the frontend.
+    console.log(`[Proxy] Backend responded with status: ${backendRes.status}`);
+    
+    return NextResponse.json(data, { status: backendRes.status });
 
-    const data = await res.json();
-    console.log('Backend response data:', data);
-
-    return NextResponse.json(data, { status: res.status });
-  } catch (error) {
-    console.error('Batch upload proxy error:', error);
-    const message = error instanceof Error ? error.message : 'Unknown error';
-    return NextResponse.json({ status: 'error', message: `Upload failed: ${message} — check connection` }, { status: 500 });
+  } catch (error: any) {
+    console.error('[Proxy] Fatal Error:', error);
+    return NextResponse.json(
+      { status: 'error', message: 'Proxy failed to contact backend.' },
+      { status: 500 }
+    );
   }
 }

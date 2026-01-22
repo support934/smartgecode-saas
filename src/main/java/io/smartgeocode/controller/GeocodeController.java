@@ -115,6 +115,7 @@ public class GeocodeController {
     // Security Components
     private final BCryptPasswordEncoder encoder = new BCryptPasswordEncoder();
     private final String JWT_SECRET;
+    private final SecretKey SIGNING_KEY;
 
     // =========================================================================================
     // CONSTRUCTOR & INITIALIZATION
@@ -123,18 +124,23 @@ public class GeocodeController {
     // Initialization Block for JWT Secret
     {
         String envSecret = System.getenv("JWT_SECRET");
+        String finalKey;
+        
         if (envSecret != null && envSecret.length() >= 32) {
-            JWT_SECRET = envSecret;
+            finalKey = envSecret;
             System.out.println("✅ Loaded JWT_SECRET from Environment Variables.");
         } else {
             // CRITICAL FALLBACK: Using a stable key to ensure tokens persist across server restarts
             System.err.println("⚠️ WARNING: JWT_SECRET missing or too short. Using STABLE fallback key.");
-            JWT_SECRET = "smartgeocode-secure-fallback-key-2026-fixed-for-stability-and-persistence";
+            finalKey = "smartgeocode-secure-fallback-key-2026-fixed-for-stability-and-persistence";
         }
+        
+        this.JWT_SECRET = finalKey;
+        this.SIGNING_KEY = Keys.hmacShaKeyFor(finalKey.getBytes(StandardCharsets.UTF_8));
     }
 
     public GeocodeController() {
-        System.out.println("=== GeocodeController Live: Heavy-Duty Version Loaded (v5.1 Fixed Compilation) ===");
+        System.out.println("=== GeocodeController Live: Heavy-Duty Version Loaded (v6.0 - Full Restoration) ===");
     }
 
     // Static Block for Critical Stripe Check
@@ -200,8 +206,9 @@ public class GeocodeController {
                 return 0L;
             }
             
+            // Use strict parsing with the stable key
             Claims claims = Jwts.parserBuilder()
-                .setSigningKey(JWT_SECRET.getBytes(StandardCharsets.UTF_8))
+                .setSigningKey(SIGNING_KEY)
                 .build()
                 .parseClaimsJws(token)
                 .getBody();
@@ -586,12 +593,10 @@ public class GeocodeController {
                 
                 String resCsv = rs.getString("results");
                 if (resCsv != null && !resCsv.isEmpty()) {
-                    // Send up to 50 lines for live preview
                     String[] lines = resCsv.split("\n");
                     List<Map<String, String>> preview = new ArrayList<>();
-                    // Skip header (index 0)
                     for(int i=1; i<Math.min(lines.length, 51); i++) {
-                        String[] cols = lines[i].split("\",\""); // Basic CSV split handling quoted commas
+                        String[] cols = lines[i].split("\",\"");
                         if(cols.length >= 4) {
                             preview.add(Map.of(
                                 "address", cols[0].replace("\"", ""), 
@@ -690,18 +695,19 @@ public class GeocodeController {
         } catch (Exception e) { return ResponseEntity.status(500).body(Map.of("status", "error", "message", e.getMessage())); }
     }
 
+    // GENERATE TOKEN (USING STABLE SECRET)
     private String generateToken(String email, int userId) {
         return Jwts.builder()
             .setSubject(email)
             .claim("userId", userId)
             .setIssuedAt(new Date())
-            .setExpiration(new Date(System.currentTimeMillis() + 604800000)) // 7 Days
-            .signWith(SignatureAlgorithm.HS256, JWT_SECRET)
+            .setExpiration(new Date(System.currentTimeMillis() + 604800000)) // 7 days
+            .signWith(SIGNING_KEY, SignatureAlgorithm.HS256)
             .compact();
     }
     
     // =========================================================================================
-    // API ENDPOINT: USAGE STATS
+    // API ENDPOINT: USAGE STATS (With Auth Protection)
     // =========================================================================================
     @GetMapping("/usage")
     public ResponseEntity<Map<String, Object>> getUsage(@RequestHeader(value = "Authorization", required = false) String authHeader) {
@@ -805,7 +811,7 @@ public class GeocodeController {
         } catch (Exception e) { return ResponseEntity.status(400).body("Error"); }
     }
     
-    // === MISSING UTILS RESTORED ===
+    // === RESTORED HELPER METHOD ===
     private boolean allColumnsEmpty(String[] line) {
         if (line == null) return true;
         for(String s : line) if(s != null && !s.trim().isEmpty()) return false;

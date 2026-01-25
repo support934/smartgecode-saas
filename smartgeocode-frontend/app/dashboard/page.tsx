@@ -268,6 +268,9 @@ export default function Dashboard() {
     setError('');
     setLimitReached(false); // Reset limit state on new attempt
     
+    // Reset current batch to ensure UI clears old progress
+    setCurrentBatch(null);
+
     const formData = new FormData();
     formData.append('file', file);
     formData.append('email', email);
@@ -336,6 +339,21 @@ export default function Dashboard() {
       }
     }
   };
+
+  // Helper Logic for "Smart Button" State
+  const getBatchButtonState = () => {
+      if (loading) return { text: 'Starting Upload...', color: 'bg-red-400 cursor-wait', disabled: true };
+      
+      // If we are currently tracking a batch, change button based on its status
+      if (currentBatch) {
+          if (currentBatch.status === 'processing') return { text: 'Processing Background...', color: 'bg-blue-500 cursor-progress', disabled: true };
+          if (currentBatch.status === 'complete') return { text: '✅ Batch Complete! Start New?', color: 'bg-green-600 hover:bg-green-700', disabled: false };
+      }
+      
+      return { text: 'Start Batch Process', color: 'bg-red-600 hover:bg-red-700', disabled: !file };
+  };
+
+  const batchBtn = getBatchButtonState();
 
   const downloadBatch = (id: number) => {
     // Direct link to download endpoint
@@ -457,6 +475,8 @@ export default function Dashboard() {
       setIsDragOver(false);
       if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
           setFile(e.dataTransfer.files[0]);
+          // Reset batch state so button goes back to "Start"
+          setCurrentBatch(null);
       }
   };
 
@@ -623,7 +643,12 @@ export default function Dashboard() {
                             <input 
                                 type="file" 
                                 accept=".csv" 
-                                onChange={(e) => setFile(e.target.files?.[0] || null)}
+                                onChange={(e) => {
+                                    if(e.target.files?.[0]) { 
+                                        setFile(e.target.files[0]); 
+                                        setCurrentBatch(null); // Reset UI state on new file
+                                    }
+                                }}
                                 className="absolute inset-0 opacity-0 cursor-pointer w-full h-full z-10"
                             />
                             <div className="pointer-events-none">
@@ -634,12 +659,14 @@ export default function Dashboard() {
                                 <p className="text-sm text-gray-400 mt-2">or drag and drop file here</p>
                             </div>
                         </div>
+                        
+                        {/* SMART BUTTON */}
                         <button 
                             type="submit" 
-                            disabled={loading}
-                            className="w-full bg-red-600 text-white py-4 rounded-xl font-bold text-lg hover:bg-red-700 disabled:opacity-50 shadow-md transition transform hover:-translate-y-0.5 active:translate-y-0"
+                            disabled={batchBtn.disabled} 
+                            className={`w-full text-white py-3 rounded-xl font-bold text-lg shadow-md transition-all ${batchBtn.color}`}
                         >
-                            {loading ? 'Starting Process...' : 'Start Batch Process'}
+                            {batchBtn.text}
                         </button>
                     </form>
                     
@@ -663,7 +690,7 @@ export default function Dashboard() {
                                             </ul>
                                             <button 
                                                 onClick={handleUpsell} 
-                                                className="w-full bg-red-600 text-white font-bold py-4 rounded-xl hover:bg-red-700 transition shadow-lg text-lg flex items-center justify-center gap-2 mt-4"
+                                                className="w-full bg-red-600 text-white font-bold py-4 rounded-xl hover:bg-red-700 transition shadow-lg text-lg flex items-center justify-center gap-2"
                                             >
                                                 Upgrade to Pro Now ⚡
                                             </button>
@@ -675,14 +702,14 @@ export default function Dashboard() {
                                             </p>
                                             <button 
                                                 onClick={handleEnterpriseContact} 
-                                                className="w-full bg-blue-700 text-white font-bold py-4 rounded-xl hover:bg-blue-800 transition shadow-lg text-lg flex items-center justify-center gap-2 mt-4"
+                                                className="w-full bg-blue-700 text-white font-bold py-4 rounded-xl hover:bg-blue-800 transition shadow-lg text-lg flex items-center justify-center gap-2"
                                             >
                                                 Contact Sales for Enterprise 🏢
                                             </button>
                                         </>
                                     )}
                                 </div>
-                                <div className="text-5xl opacity-20">🛑</div>
+                                <div className="text-4xl opacity-20">🛑</div>
                             </div>
                         </div>
                     )}
@@ -833,7 +860,7 @@ export default function Dashboard() {
                     ) : (
                         <div className="space-y-3">
                             {batches.map(b => (
-                                <div key={b.id} className="flex justify-between items-center p-4 hover:bg-gray-50 rounded-xl border-b border-gray-100 last:border-0 transition-all duration-200">
+                                <div key={b.id} className="flex justify-between items-center p-4 bg-gray-50 rounded-xl border border-gray-100 hover:bg-gray-100 hover:border-gray-300 transition-all duration-200">
                                     <div className="flex-1">
                                         <div className="flex items-center gap-2">
                                             <p className="font-bold text-sm text-gray-800">Batch #{b.id}</p>

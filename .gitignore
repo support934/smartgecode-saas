@@ -45,3 +45,5 @@ backups/
 **/node_modules/ 
 **/target/ 
 **/*.jar 
+
+application-dev.properties

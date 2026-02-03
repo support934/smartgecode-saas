@@ -84,7 +84,11 @@ import com.stripe.exception.SignatureVerificationException;
  */
 @RestController
 @RequestMapping("/api")
-@CrossOrigin(origins = {"http://localhost:3000", "https://geocode-frontend.smartgeocode.io", "https://smartgeocode.io"}, allowCredentials = "true")
+@CrossOrigin(origins = {
+    "http://localhost:3000",
+    "https://smartgeocode-dev.vercel.app",
+    "https://geocode-frontend.smartgeocode.io", 
+    "https://smartgeocode.io"}, allowCredentials = "true")
 public class GeocodeController {
 
     // =========================================================================================

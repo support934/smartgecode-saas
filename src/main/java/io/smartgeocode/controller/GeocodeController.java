@@ -112,6 +112,9 @@ public class GeocodeController {
     @Autowired
     private DataSource dataSource;
 
+    @Autowired
+    private io.smartgeocode.repository.VisitorActivityRepository visitorRepository;
+
     // Lookup Service for Usage Tracking
     @Autowired
     private LookupService lookupService;
@@ -268,9 +271,28 @@ public class GeocodeController {
     // =========================================================================================
     // API ENDPOINT: BATCH GEOCODE (ASYNC PROCESSING)
     // =========================================================================================
+// =========================================================================================
+    // V2 UPGRADED ENDPOINT: BATCH UPLOAD (With Analytics)
+    // =========================================================================================
     @PostMapping(value = "/batch-geocode", consumes = "multipart/form-data")
-    public ResponseEntity<Map<String, Object>> batchGeocode(@RequestParam("file") MultipartFile file, @RequestParam("email") String email, @RequestHeader(value = "Authorization", required = false) String authHeader) {
+    public ResponseEntity<Map<String, Object>> batchGeocode(
+            @RequestParam("file") MultipartFile file, 
+            @RequestParam("email") String email, 
+            // V2 ADDITION: Capture the anonymous ID (Defaults to "unknown" if missing)
+            @RequestParam(value = "anonymousId", defaultValue = "unknown") String anonymousId,
+            @RequestHeader(value = "Authorization", required = false) String authHeader) {
         
+        // 1. V2 ANALYTICS: Record the attempt immediately (The "Black Box")
+        try {
+            visitorRepository.save(new io.smartgeocode.model.VisitorActivity(
+                anonymousId, 
+                "BATCH_UPLOAD_ATTEMPT", 
+                "Email: " + email + " | File: " + file.getOriginalFilename()
+            ));
+        } catch (Exception e) {
+            System.err.println("[Analytics] Failed to log batch attempt: " + e.getMessage());
+        }
+
         Long tokenUserId = extractUserId(authHeader);
         System.out.println("Batch Upload Received. TokenUser: " + tokenUserId + " Email: " + email);
 
@@ -291,6 +313,8 @@ public class GeocodeController {
             }
             
             if (dbUserId == 0L) {
+                // V2 ANALYTICS: Log the specific failure reason
+                visitorRepository.save(new io.smartgeocode.model.VisitorActivity(anonymousId, "ERROR_USER_NOT_FOUND", email));
                 return ResponseEntity.status(404).body(Map.of("status", "error", "message", "User email not found in database"));
             }
 
@@ -299,7 +323,7 @@ public class GeocodeController {
             
             // B. Parse CSV to Count Rows (Strict Validation)
             List<String[]> validRows = new ArrayList<>();
-            try (CSVReader reader = new CSVReader(new InputStreamReader(file.getInputStream()))) {
+            try (com.opencsv.CSVReader reader = new com.opencsv.CSVReader(new java.io.InputStreamReader(file.getInputStream()))) {
                 String[] line;
                 while ((line = reader.readNext()) != null) {
                     // Skip empty lines, comments, or header-like repetition

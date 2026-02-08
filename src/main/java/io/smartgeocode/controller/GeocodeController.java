@@ -274,75 +274,79 @@ public class GeocodeController {
 // =========================================================================================
     // V2 UPGRADED ENDPOINT: BATCH UPLOAD (With Analytics)
     // =========================================================================================
+   // =========================================================================================
+    // FIXED PRODUCTION ENDPOINT: BATCH UPLOAD (Smart Auth)
+    // =========================================================================================
     @PostMapping(value = "/batch-geocode", consumes = "multipart/form-data")
     public ResponseEntity<Map<String, Object>> batchGeocode(
             @RequestParam("file") MultipartFile file, 
             @RequestParam("email") String email, 
-            // V2 ADDITION: Capture the anonymous ID (Defaults to "unknown" if missing)
             @RequestParam(value = "anonymousId", defaultValue = "unknown") String anonymousId,
             @RequestHeader(value = "Authorization", required = false) String authHeader) {
         
-        // 1. V2 ANALYTICS: Record the attempt immediately (The "Black Box")
+        // 1. ANALYTICS (Safe Logging)
         try {
-            visitorRepository.save(new io.smartgeocode.model.VisitorActivity(
-                anonymousId, 
-                "BATCH_UPLOAD_ATTEMPT", 
-                "Email: " + email + " | File: " + file.getOriginalFilename()
-            ));
-        } catch (Exception e) {
-            System.err.println("[Analytics] Failed to log batch attempt: " + e.getMessage());
+            if (visitorRepository != null) {
+                visitorRepository.save(new io.smartgeocode.model.VisitorActivity(
+                    anonymousId, "BATCH_UPLOAD_ATTEMPT", "Email: " + email + " | File: " + file.getOriginalFilename()
+                ));
+            }
+        } catch (Exception e) { System.err.println("Analytics Error: " + e.getMessage()); }
+
+        // 2. RESOLVE USER (The Fixed Logic)
+        Long tokenUserId = extractUserId(authHeader);
+        Long finalUserId = 0L;
+
+        try (Connection conn = dataSource.getConnection()) {
+            // Step A: Try finding user by Email
+            PreparedStatement stmt = conn.prepareStatement("SELECT id FROM users WHERE email = ?");
+            stmt.setString(1, email);
+            ResultSet rs = stmt.executeQuery();
+            if (rs.next()) {
+                finalUserId = rs.getLong("id");
+            } 
+            
+            // Step B: If Email failed, try the Token ID (The Safety Net)
+            if (finalUserId == 0L && tokenUserId != 0L) {
+                 PreparedStatement stmt2 = conn.prepareStatement("SELECT id FROM users WHERE id = ?");
+                 stmt2.setLong(1, tokenUserId);
+                 ResultSet rs2 = stmt2.executeQuery();
+                 if (rs2.next()) {
+                     finalUserId = tokenUserId; // Database confirms this Token ID exists
+                 }
+            }
+        } catch (Exception e) { e.printStackTrace(); }
+
+        // 3. FINAL CHECK
+        if (finalUserId == 0L) {
+             if (visitorRepository != null) visitorRepository.save(new io.smartgeocode.model.VisitorActivity(anonymousId, "ERROR_USER_NOT_FOUND", email));
+             return ResponseEntity.status(404).body(Map.of("status", "error", "message", "User not found. Please Login again."));
         }
 
-        Long tokenUserId = extractUserId(authHeader);
-        System.out.println("Batch Upload Received. TokenUser: " + tokenUserId + " Email: " + email);
+        System.out.println("Batch Upload Authorized. UserID: " + finalUserId);
 
         if (file.isEmpty()) {
             return ResponseEntity.badRequest().body(Map.of("status", "error", "message", "Uploaded file is empty"));
         }
 
+        // 4. PROCESS FILE (Pass the confirmed ID)
+        // Note: Copying the rest of your parsing logic here for completeness
         try {
-            // A. Resolve User ID (Token preferred, Fallback to Email for stability)
-            Long dbUserId = 0L;
-            try (Connection conn = dataSource.getConnection()) {
-                PreparedStatement stmt = conn.prepareStatement("SELECT id FROM users WHERE email = ?");
-                stmt.setString(1, email);
-                ResultSet rs = stmt.executeQuery();
-                if (rs.next()) {
-                    dbUserId = rs.getLong("id");
-                }
-            }
-            
-            if (dbUserId == 0L) {
-                // V2 ANALYTICS: Log the specific failure reason
-                visitorRepository.save(new io.smartgeocode.model.VisitorActivity(anonymousId, "ERROR_USER_NOT_FOUND", email));
-                return ResponseEntity.status(404).body(Map.of("status", "error", "message", "User email not found in database"));
-            }
-
-            // Use Token ID if valid, otherwise fallback to DB ID
-            Long finalUserId = (tokenUserId != 0L) ? tokenUserId : dbUserId;
-            
-            // B. Parse CSV to Count Rows (Strict Validation)
             List<String[]> validRows = new ArrayList<>();
             try (com.opencsv.CSVReader reader = new com.opencsv.CSVReader(new java.io.InputStreamReader(file.getInputStream()))) {
                 String[] line;
                 while ((line = reader.readNext()) != null) {
-                    // Skip empty lines, comments, or header-like repetition
                     if (line.length > 0 && !line[0].trim().startsWith("#") && !allColumnsEmpty(line)) {
                         validRows.add(line);
                     }
                 }
             }
-            // Subtract 1 assuming the first row is a header
             int rowCount = validRows.isEmpty() ? 0 : validRows.size() - 1; 
 
-            System.out.println("Batch Pre-Check - UserID: " + finalUserId + ", Rows: " + rowCount);
-
-            // C. Check Usage Limits BEFORE Processing
             if (!lookupService.canPerformLookup(finalUserId, rowCount)) {
-                return ResponseEntity.status(403).body(Map.of("status", "error", "message", "Batch size (" + rowCount + ") exceeds remaining monthly limit. Please upgrade."));
+                return ResponseEntity.status(403).body(Map.of("status", "error", "message", "Batch size (" + rowCount + ") exceeds limit."));
             }
 
-            // D. Create Batch Record in DB
             int batchId;
             try (Connection conn = dataSource.getConnection()) {
                 PreparedStatement stmt = conn.prepareStatement("INSERT INTO batches (user_id, status, total_rows, processed_rows) VALUES (?, 'processing', ?, 0)", Statement.RETURN_GENERATED_KEYS);
@@ -354,13 +358,8 @@ public class GeocodeController {
                 batchId = keys.getInt(1);
             }
 
-            // E. Start Async Processing Thread
-            System.out.println("Starting Async Batch #" + batchId + " for UserID " + finalUserId);
-            
-            // Fire and Forget - The thread will handle the heavy lifting
             CompletableFuture.runAsync(() -> processBatchLogic(batchId, finalUserId, validRows, email));
-            
-            return ResponseEntity.ok(Map.of("status", "success", "batchId", batchId, "message", "Processing started in background.", "totalRows", rowCount));
+            return ResponseEntity.ok(Map.of("status", "success", "batchId", batchId, "message", "Processing started.", "totalRows", rowCount));
 
         } catch (Exception e) {
             e.printStackTrace();

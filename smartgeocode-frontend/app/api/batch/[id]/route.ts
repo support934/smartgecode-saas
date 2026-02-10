@@ -14,18 +14,13 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
     // 2. Auth Header
     const authHeader = req.headers.get('authorization');
 
-    // 3. DYNAMIC BACKEND SELECTION (The Safe Way) 🛡️
-    // We look for the variable. If missing, we DO NOT fall back to Dev. We throw an error.
-    const backendUrl = process.env.BACKEND_URL || process.env.NEXT_PUBLIC_BACKEND_URL;
-
-    if (!backendUrl) {
-        console.error("❌ CRITICAL ERROR: BACKEND_URL variable is not set in Vercel!");
-        return NextResponse.json({ status: 'error', message: 'Server Configuration Error' }, { status: 500 });
-    }
+    // 3. FORCE DEV URL (The Debug Fix) 
+    // We are temporarily hardcoding this to rule out any variable issues.
+    const backendUrl = 'https://dev-smartgeocode-saas-production.up.railway.app';
 
     console.log(`[Proxy] Polling Batch #${batchId} from: ${backendUrl}`);
 
-    // 4. Forward to Backend
+    // 4. Forward Request to Java Backend
     const backendRes = await fetch(`${backendUrl}/api/batch/${batchId}?email=${encodeURIComponent(email)}`, {
       method: 'GET',
       headers: {
@@ -36,8 +31,7 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
 
     // 5. Handle Response
     if (!backendRes.ok) {
-        // If the backend returns 404, it means the batch doesn't exist (yet)
-        // We forward that status so the frontend knows to keep waiting or show an error
+        console.warn(`[Proxy] Backend returned ${backendRes.status}`);
         return NextResponse.json(
             { status: 'error', message: 'Backend lookup failed' }, 
             { status: backendRes.status }

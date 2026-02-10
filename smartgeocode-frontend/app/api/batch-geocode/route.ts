@@ -2,33 +2,60 @@ import { NextRequest, NextResponse } from 'next/server';
 
 export async function POST(req: NextRequest) {
   try {
-    const formData = await req.formData();
+    // 1. Parse the incoming form data
+    const incomingFormData = await req.formData();
+    const file = incomingFormData.get('file');
+    const email = incomingFormData.get('email');
+
+    // 2. DEBUG LOGGING (Check Vercel Logs for this!)
+    console.log(`[Proxy] Received Upload Request.`);
+    console.log(`[Proxy] File Present: ${!!file}`);
+    console.log(`[Proxy] Email Present: ${email}`);
+
+    // 3. Validate before forwarding
+    if (!email) {
+      console.error("[Proxy] Error: Email is missing from request.");
+      return NextResponse.json({ status: 'error', message: 'Email missing in request' }, { status: 400 });
+    }
+
+    // 4. Config & Auth
+    // Uses the BACKEND_URL variable we set earlier
+    const backendUrl = process.env.BACKEND_URL || 
+                       process.env.NEXT_PUBLIC_BACKEND_URL || 
+                       'https://dev-smartgeocode-saas-production.up.railway.app';
     
-    // Check if the backend URL is configured
-    const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL || 'https://api-java-production-fb09.up.railway.app';
-    
-    // Get the auth token from the incoming request headers
     const authHeader = req.headers.get('authorization');
 
-    console.log(`[Proxy] Forwarding batch upload to: ${backendUrl}/api/batch-geocode`);
+    console.log(`[Proxy] Forwarding to: ${backendUrl}/api/batch-geocode`);
 
-    // Forward the request to the Java Backend
+    // 5. Re-Construct FormData (The Fix)
+    // We create a FRESH FormData object to ensure boundaries are set correctly
+    const outgoingFormData = new FormData();
+    outgoingFormData.append('file', file as Blob);
+    outgoingFormData.append('email', email as string);
+
+    // 6. Forward to Java Backend
     const backendRes = await fetch(`${backendUrl}/api/batch-geocode`, {
       method: 'POST',
       headers: {
-        // Forward the Authorization header (Bearer token)
         ...(authHeader && { 'Authorization': authHeader }),
+        // NOTE: Do NOT set Content-Type header manually here; fetch does it automatically
       },
-      body: formData, // Forward the multipart form data directly
+      body: outgoingFormData,
     });
 
-    // Parse the response from the backend
-    const data = await backendRes.json();
-
-    // CRITICAL FIX: Do NOT throw an error for non-200 statuses (like 403).
-    // Instead, forward the exact status code and body to the frontend.
+    // 7. Handle Response
     console.log(`[Proxy] Backend responded with status: ${backendRes.status}`);
     
+    // Safely parse JSON
+    let data;
+    try {
+        data = await backendRes.json();
+    } catch (e) {
+        console.error("[Proxy] Failed to parse backend JSON", e);
+        data = { message: "Backend error (non-JSON response)" };
+    }
+
     return NextResponse.json(data, { status: backendRes.status });
 
   } catch (error: any) {

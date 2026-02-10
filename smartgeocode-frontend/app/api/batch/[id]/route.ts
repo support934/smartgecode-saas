@@ -1,10 +1,19 @@
 import { NextRequest, NextResponse } from 'next/server';
 
-export async function GET(req: NextRequest, { params }: { params: { id: string } }) {
+// ✅ CORRECT TYPE: Params is a Promise now!
+export async function GET(
+  req: NextRequest, 
+  { params }: { params: Promise<{ id: string }> } // <--- Change type here
+) {
   try {
-    const batchId = params.id;
+    // ✅ CRITICAL STEP: Await the params before using them
+    const resolvedParams = await params; 
+    const batchId = resolvedParams.id; // <--- Now you can access .id safely
+
     const { searchParams } = new URL(req.url);
     const email = searchParams.get('email');
+
+    // ... (rest of your validation and logic stays the same) ...
 
     // 1. Validation
     if (!email) {
@@ -14,8 +23,7 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
     // 2. Auth Header
     const authHeader = req.headers.get('authorization');
 
-    // 3. FORCE DEV URL (The Debug Fix) 
-    // We are temporarily hardcoding this to rule out any variable issues.
+    // 3. FORCE DEV URL (The Debug Fix)
     const backendUrl = 'https://dev-smartgeocode-saas-production.up.railway.app';
 
     console.log(`[Proxy] Polling Batch #${batchId} from: ${backendUrl}`);

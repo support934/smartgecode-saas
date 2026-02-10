@@ -1,34 +1,32 @@
 import { NextRequest, NextResponse } from 'next/server';
 
-// ✅ CORRECT TYPE: Params is a Promise now!
 export async function GET(
   req: NextRequest, 
-  { params }: { params: Promise<{ id: string }> } // <--- Change type here
+  { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    // ✅ CRITICAL STEP: Await the params before using them
     const resolvedParams = await params; 
-    const batchId = resolvedParams.id; // <--- Now you can access .id safely
+    const batchId = resolvedParams.id;
 
     const { searchParams } = new URL(req.url);
     const email = searchParams.get('email');
 
-    // ... (rest of your validation and logic stays the same) ...
-
-    // 1. Validation
     if (!email) {
       return NextResponse.json({ status: 'error', message: 'Email required' }, { status: 400 });
     }
 
-    // 2. Auth Header
     const authHeader = req.headers.get('authorization');
+    
+    // ✅ CRITICAL: Using the variable logic. 
+    // If these variables are empty, it falls back to the typo-url (the one that works).
+    const backendUrl = process.env.BACKEND_URL || 
+                       process.env.NEXT_PUBLIC_BACKEND_URL || 
+                       'https://dev-smartgecode-saas-production.up.railway.app'; 
+                       // ^^^ NOTE: 'smartgecode' (The actual working URL)
 
-    // 3. FORCE DEV URL (The Debug Fix)
-    const backendUrl = 'https://dev-smartgeocode-saas-production.up.railway.app';
+    // ✅ REVERT TO SINGULAR: '/api/batch/' (Not batches)
+    console.log(`[Proxy] Polling Batch #${batchId} from: ${backendUrl}/api/batch/${batchId}`);
 
-    console.log(`[Proxy] Polling Batch #${batchId} from: ${backendUrl}`);
-
-    // 4. Forward Request to Java Backend
     const backendRes = await fetch(`${backendUrl}/api/batch/${batchId}?email=${encodeURIComponent(email)}`, {
       method: 'GET',
       headers: {
@@ -37,7 +35,6 @@ export async function GET(
       },
     });
 
-    // 5. Handle Response
     if (!backendRes.ok) {
         console.warn(`[Proxy] Backend returned ${backendRes.status}`);
         return NextResponse.json(

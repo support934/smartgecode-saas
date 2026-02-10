@@ -5,16 +5,9 @@ const nextConfig = {
     buildActivity: true,
   },
 
-  // 2. THE BRIDGE (Fixes Network Error)
-  async rewrites() {
-    return [
-      {
-        source: '/api/:path*',
-        // PROXY TARGET: This must be your PUBLIC Railway URL
-        destination: 'https://api-java-production-fb09.up.railway.app/api/:path*', 
-      },
-    ];
-  },
+  // ❌ DELETED: The 'rewrites' section.
+  // We removed it so Next.js will use your actual API files (app/api/...)
+  // which we spent all day fixing.
 
   // 3. Caching Headers (Keep existing settings)
   async headers() {
